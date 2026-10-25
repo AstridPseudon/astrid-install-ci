@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import app from './lib.js';
+import { bounded, createController, DOWN_MS, runCommand } from './lifecycle.mjs';
 
 export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
@@ -63,6 +64,7 @@ export function commands(root, editor, mode, installed, platform = process.platf
   } else runtime = { command: p.join(root, 'run'), args: runtimeArgs };
   return {
     runtime,
+    down: { command: installed.python, args: ['-I', '-m', 'astrid_runtime', 'down', '--profile', 'astrid', '--data-root', installed.data, '--source-manifest', installed.profile, '--json'] },
     status: { command: installed.python, args: ['-I', '-m', 'astrid_runtime', 'status', '--data-root', installed.data, '--json'] },
     dependencies: { command: installed.node, args: [installed.npm, 'ci', '--no-audit', '--no-fund'] },
     build: { command: installed.node, args: ['scripts/dev-local-workspace.mjs', '--build'] },
@@ -93,7 +95,8 @@ export async function runSession({ action, root, editor, mode, platform = proces
   installed = installation(root), spawnProcess = spawn, request = fetch,
   portOpen = app.tcpPortOpen, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   killProcess = process.kill.bind(process), signals = process, output = console.log,
-  startupDeadlineMs = 180_000 } = {}) {
+  startupDeadlineMs = 180_000, openController = createController, gracefulDown = runCommand,
+  limit = bounded } = {}) {
   if (!['serve', 'build'].includes(action) || !['backend', 'local'].includes(mode)) throw new Error('Invalid Astrid session arguments.');
   const specs = commands(root, editor, mode, installed, platform);
   const env = { ...installed.env };
@@ -102,6 +105,11 @@ export async function runSession({ action, root, editor, mode, platform = proces
   const children = [];
   let stopping = false;
   let discovery;
+  let runtimeItem;
+  let editorItem;
+  let controller;
+  let stopRequested = false;
+  let cleanupPromise;
   let failure;
   let wakeFailure;
   const failed = new Promise((_, reject) => { wakeFailure = reject; });
@@ -140,8 +148,9 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (code !== 0) return false;
     try {
       const status = JSON.parse(item.stdout);
-      discovery = status.discovery;
-      return status.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok';
+      const healthy = status.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok';
+      if (healthy) discovery = status.discovery;
+      return healthy;
     } catch { return false; }
   }
   async function waitUntil(check, description) {
@@ -175,19 +184,66 @@ export async function runSession({ action, root, editor, mode, platform = proces
     await item.done;
     item.released = true;
   }
+  function shutdown() {
+    return cleanupPromise ??= (async () => {
+      stopping = true;
+      const errors = [];
+      // The editor (and any in-flight build/status command) goes first.
+      for (const item of [...children].reverse().filter((owned) => owned !== runtimeItem && !owned.released)) {
+        try {
+          if (stopRequested && item === editorItem && platform !== 'win32' && !item.closed) {
+            // Keep a hung editor root alive so Pinokio can still enumerate and
+            // kill all descendants, including the app's detached Vite groups.
+            signalGroup(item.child.pid, 'SIGTERM', { killProcess });
+            await limit(item.done, 5000, 'Editor stop');
+            item.released = true;
+          } else await limit(terminate(item), 8000, 'Editor/command stop');
+        }
+        catch (error) { errors.push(error.message); }
+      }
+      if (runtimeItem && !runtimeItem.released) {
+        if (!runtimeItem.closed && discovery?.runtime_instance_id && errors.length === 0) {
+          try {
+            await gracefulDown(specs.down, { env, cwd: root, timeoutMs: DOWN_MS });
+            await limit(runtimeItem.done, 5000, 'Runtime exit after down');
+          } catch (error) { errors.push(error.message); }
+        } else if (!runtimeItem.closed && !discovery?.runtime_instance_id) {
+          // Startup never established custody. Signal only the owned foreground
+          // process; do not down a stale/external discovery at the same root.
+          try { await limit(terminate(runtimeItem), 8000, 'Starting Runtime stop'); }
+          catch (error) { errors.push(error.message); }
+        }
+        // Controlled Stop leaves a failed/live Runtime for Pinokio's final tree
+        // kill. Direct signals and temporary builds have to drain it themselves.
+        if (!stopRequested || runtimeItem.closed) {
+          try { await limit(terminate(runtimeItem), 8000, 'Runtime cleanup'); }
+          catch (error) { errors.push(error.message); }
+        }
+      }
+      return { ok: errors.length === 0, errors };
+    })();
+  }
+  const requestStop = () => {
+    stopRequested = true;
+    stopping = true;
+    fail(new Error('Astrid session stopped.'));
+    return shutdown();
+  };
   const onSignal = () => { stopping = true; fail(new Error('Astrid session stopped.')); };
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.on(signal, onSignal);
   try {
     // Never attach the editor to someone else's same-data-root Runtime.
     if (await runtimeHealthy()) throw new Error('An Astrid Runtime already uses this data root. Stop it with its owner first.');
     if (mode === 'local' && action === 'serve' && await portOpen(5180)) throw new Error('Port 5180 is already in use. Stop that editor or program first.');
+    controller = await openController(root, requestStop);
     if (action === 'build') await checked(specs.dependencies, { cwd: editor });
-    launch(specs.runtime, { persistent: true });
+    discovery = undefined;
+    runtimeItem = launch(specs.runtime, { persistent: true });
     await waitUntil(runtimeHealthy, 'Astrid Runtime');
     if (action === 'build') {
       await checked(specs.build, { cwd: editor });
     } else {
-      if (mode === 'local') launch(specs.preview, { cwd: editor, persistent: true });
+      if (mode === 'local') editorItem = launch(specs.preview, { cwd: editor, persistent: true });
       const url = mode === 'local' ? 'http://127.0.0.1:5180/tools/video-editor' : app.DOOR_HEALTH_URL;
       await waitUntil(async () => {
         try {
@@ -207,17 +263,13 @@ export async function runSession({ action, root, editor, mode, platform = proces
       output('ASTRID_PINOKIO_READY');
       await failed;
     }
+  } catch (error) {
+    if (!stopRequested) throw error;
   } finally {
-    stopping = true;
-    // Editor before Runtime, including npm/build on errors or interrupts.
-    const results = [];
-    for (const item of [...children].reverse().filter((owned) => !owned.released)) {
-      try { await terminate(item); results.push({ status: 'fulfilled' }); }
-      catch (reason) { results.push({ status: 'rejected', reason }); }
-    }
+    const result = await shutdown();
+    await controller?.close();
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.removeListener(signal, onSignal);
-    const rejected = results.find((result) => result.status === 'rejected');
-    if (rejected) throw rejected.reason;
+    if (!result.ok && !stopRequested) throw new Error(result.errors.join(' '));
   }
 }
 

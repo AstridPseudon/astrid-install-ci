@@ -1,0 +1,90 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { test } from 'node:test';
+import { bounded, CONTROL_FILE, createController, requestGracefulStop, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
+
+const helper = path.resolve(import.meta.dirname, '../pinokio/installer-lock.py');
+test('native hook control is authenticated, awaited and removes its record', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-stop-control-'));
+  let controller;
+  try {
+    let release;
+    let called;
+    const entered = new Promise((resolve) => { called = resolve; });
+    controller = await createController(root, async () => { called(); await new Promise((resolve) => { release = resolve; }); return { ok: true }; });
+    const record = JSON.parse(fs.readFileSync(path.join(root, CONTROL_FILE)));
+    assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST' })).status, 403);
+    let finished = false;
+    const stop = requestGracefulStop(root).then(() => { finished = true; });
+    await entered;
+    assert.equal(finished, false);
+    release(); await stop;
+    assert.equal(finished, true);
+    await controller.close(); controller = null;
+    assert.equal(fs.existsSync(path.join(root, CONTROL_FILE)), false);
+    assert.equal((await requestGracefulStop(root)).absent, true);
+  } finally { await controller?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('controller failures and deadlines are reported without unbounded test waits', async () => {
+  let expire;
+  const limited = bounded(new Promise(() => {}), 25_000, 'Runtime exit', { schedule: (callback, ms) => { assert.equal(ms, 25_000); expire = callback; return 1; }, cancel: () => {} });
+  expire(); await assert.rejects(limited, /timed out/);
+  await assert.rejects(runCommand({ command: 'python', args: ['down'] }, { timeoutMs: 25_000,
+    execute: (_cmd, _args, options, done) => { assert.equal(options.timeout, 25_000); assert.equal(options.killSignal, 'SIGKILL'); done({ killed: true, message: 'hung' }, '', ''); },
+  }), /timed out/);
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    let requested = false;
+    await assert.rejects(requestGracefulStop('/fake', { platform,
+      killProcess: () => {},
+      filesystem: { readFileSync: () => JSON.stringify({ schema: 1, pid: 5001, port: 1234, token: 'a'.repeat(64) }) },
+      request: async (_url, options) => { requested = true; assert.equal(options.method, 'POST'); assert.equal(options.headers.Authorization, `Bearer ${'a'.repeat(64)}`); return { ok: false, json: async () => ({ ok: false, errors: ['down failed'] }) }; },
+    }), /down failed/);
+    assert.equal(requested, true);
+  }
+});
+
+test('lock verifier uses installed Python, a bounded wait and fails closed for incomplete installs', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const installed = { python: platform === 'win32' ? 'C:\\pinned\\python.exe' : '/pinned/python', env: { HOME: '/fake-home' } };
+    let called = false;
+    await waitForInstallerLock('/fake/root', { platform, filesystem: { existsSync: () => true }, installed, run: async (spec, options) => {
+      called = true; assert.equal(spec.command, installed.python); assert.deepEqual(spec.args, ['-I', helper, '10']);
+      assert.equal(options.timeoutMs, 12_000); assert.equal(options.env, installed.env);
+    } });
+    assert.equal(called, true);
+  }
+  await assert.rejects(waitForInstallerLock('/fake/root', { filesystem: { existsSync: () => true, readFileSync: () => { throw new Error('missing installed Python'); } } }), /missing installed Python/);
+});
+
+async function executePython(args, env) {
+  const child = spawn('python3', args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = ''; child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { output += chunk; });
+  const [code] = await once(child, 'close'); return { code, output };
+}
+test('actual lock helper rejects a held temp lock, accepts release and creates no missing lock', { skip: process.platform === 'win32' }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-installer-lock-'));
+  let holder;
+  try {
+    for (const folder of ['astrid', 'astrid/installer', 'runtime_protocol']) {
+      fs.mkdirSync(path.join(temp, folder), { recursive: true }); fs.writeFileSync(path.join(temp, folder, '__init__.py'), '');
+    }
+    fs.writeFileSync(path.join(temp, 'astrid/installer/service.py'), 'import os\nfrom pathlib import Path\ndef installer_lock_path(home, system): return Path(os.environ["TEST_LOCK"])\n');
+    fs.writeFileSync(path.join(temp, 'runtime_protocol/platform.py'), 'import fcntl\ndef lock_file(fd, blocking=False): fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)\ndef unlock_file(fd): fcntl.flock(fd,fcntl.LOCK_UN)\n');
+    const lock = path.join(temp, 'test.lock'); fs.writeFileSync(lock, '');
+    holder = spawn('python3', ['-I', '-u', '-c', 'import fcntl,sys,time\nf=open(sys.argv[1],"r+b")\nfcntl.flock(f,fcntl.LOCK_EX)\nprint("locked")\nwhile True: time.sleep(1)', lock], { stdio: ['ignore', 'pipe', 'inherit'] });
+    await once(holder.stdout, 'data');
+    const args = ['-I', '-c', 'import runpy,sys\nsys.path.insert(0,sys.argv.pop(1))\nrunpy.run_path(sys.argv.pop(1),run_name="__main__")', temp, helper, '0'];
+    const busy = await executePython(args, { ...process.env, TEST_LOCK: lock });
+    assert.notEqual(busy.code, 0); assert.match(busy.output, /Stop Astrid in Pinokio first/);
+    holder.kill('SIGTERM'); await once(holder, 'close'); holder = null;
+    assert.equal((await executePython(args, { ...process.env, TEST_LOCK: lock })).code, 0);
+    fs.unlinkSync(lock);
+    assert.equal((await executePython(args, { ...process.env, TEST_LOCK: lock })).code, 0);
+    assert.equal(fs.existsSync(lock), false);
+  } finally { if (holder) { holder.kill('SIGKILL'); await once(holder, 'close'); } fs.rmSync(temp, { recursive: true, force: true }); }
+});

@@ -10,7 +10,7 @@ const windows = require('./platforms/windows');
 // The factory keeps platform command generation testable without executing a
 // shell, querying the real ports, or writing into a real installation.
 function createApp({ platform = process.platform, appDirectory = path.resolve(__dirname, '..'),
-  environment = process.env, filesystem = fs, probe = probeDoor } = {}) {
+  environment = process.env, filesystem = fs, probe = probeDoor, lifecycle } = {}) {
   const isWindows = platform === 'win32';
   const paths = isWindows ? path.win32 : path.posix;
   const APP_DIR = appDirectory;
@@ -110,8 +110,8 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
 
   function sessionMessage(action, mode = 'local') {
     // Resolve at shell execution time: install/update may have just changed current.
-    const helper = paths.join(APP_DIR, 'pinokio', 'session.mjs');
-    const args = [helper, action, BACKEND_ROOT, EDITOR_DIR, mode].map(q).join(' ');
+    const helper = paths.join(APP_DIR, 'pinokio', action === 'stop' ? 'lifecycle.mjs' : 'session.mjs');
+    const args = (action === 'stop' ? [helper, action, BACKEND_ROOT] : [helper, action, BACKEND_ROOT, EDITOR_DIR, mode]).map(q).join(' ');
     if (isWindows) return [
       "$ErrorActionPreference = 'Stop'",
       `$version = (Get-Content -Raw -LiteralPath ${q(paths.join(BACKEND_ROOT, 'current'))}).Trim()`,
@@ -138,13 +138,36 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     return shellStep(sessionMessage(action, mode), { env: { ASTRID_INSTALL_MANAGED_BY: 'pinokio' },
       ...(action === 'serve' ? { on: [{ event: '/ASTRID_PINOKIO_READY/', done: true }] } : {}) });
   }
+  function stopHook() {
+    // A URI on.stop is only queued by api.process. A direct shell.run is awaited.
+    return shellStep(sessionMessage('stop'));
+  }
   async function stopOwnedStart(_req, ondata, kernel) {
-    // script.stop in the inspected Pinokio version does not await api.stop.
-    // Await it directly, using an absolute URI so resolution is unambiguous.
     const uri = paths.join(APP_DIR, 'pinokio', 'start.js');
-    if (kernel.api.running && !kernel.api.running[uri]) return { stopped: false };
-    await kernel.api.stop({ params: { uri } });
-    ondata?.({ raw: 'Stopped Astrid processes owned by this Pinokio launcher.\r\n' });
+    const active = !kernel.api.running || Boolean(kernel.api.running[uri]);
+    const operations = lifecycle || await import('./lifecycle.mjs');
+    const options = { filesystem, platform, environment };
+    const errors = [];
+    if (active) {
+      // Explicitly obtain the result: Pinokio logs but swallows direct hook
+      // failures. The same idempotent request also serves the native Stop hook.
+      try { await operations.requestGracefulStop(BACKEND_ROOT, options); }
+      catch (error) { errors.push(error.message); }
+      // Always perform Pinokio's final forced cleanup, even after grace expires.
+      try { await kernel.api.stop({ params: { uri } }); }
+      catch (error) { errors.push(error.message); }
+    }
+    try { await operations.waitForInstallerLock(BACKEND_ROOT, options); }
+    catch (error) { errors.push(error.message); }
+    if (errors.length) {
+      const prefix = 'Stop Astrid in Pinokio first, then try again.';
+      const details = errors.filter((error) => !error.includes(prefix)).join(' ');
+      const message = `${prefix}${details ? ` ${details}` : ''}`;
+      ondata?.({ raw: `${message}\r\n` });
+      throw new Error(message);
+    }
+    ondata?.({ raw: 'Astrid stopped; installer lock is free.\r\n' });
+    return { stopped: active, lockFree: true };
   }
   async function ensureDoorPortFree(_req, ondata) {
     const result = await probe();
@@ -159,7 +182,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     getPaths: () => ({ root: BACKEND_ROOT, editor: EDITOR_DIR }), setting, appRef, bootstrapScript,
     shellStep, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
-    stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
+    stopHook, stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),
     ...CONSTANTS };
 }

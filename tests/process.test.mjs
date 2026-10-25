@@ -60,11 +60,11 @@ test('real POSIX fake Runtime/build processes leave no live descendants after su
       fs.mkdirSync(root); fs.mkdirSync(path.join(editor, 'scripts'), { recursive: true });
       writeExecutable(path.join(root, 'run'), `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(process.env.PID_FILE,String(process.pid));process.on('SIGTERM',()=>{fs.rmSync(process.env.PID_FILE,{force:true});process.exit(0)});setInterval(()=>{},1000);\n`);
       const python = path.join(temp, 'fake-python');
-      writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const healthy=fs.existsSync(process.env.PID_FILE);console.log(JSON.stringify({support:{healthy},health:{status:'ok'}}));process.exitCode=healthy?0:1;\n`);
+      writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const healthy=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){if(healthy)process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=healthy?0:1;}\n`);
       const npm = path.join(temp, 'npm-cli.cjs'); fs.writeFileSync(npm, 'process.exit(0)');
       fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';import {spawn} from 'node:child_process';\nconst child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.env.GRANDCHILD_FILE,String(child.pid));\n${outcome === 'success' ? 'child.kill();process.exit(0);' : outcome === 'failure' ? 'process.exit(9);' : 'setInterval(()=>{},1000);'}\n`);
       const pidFile = path.join(temp, 'runtime.pid'); const grandchildFile = path.join(temp, 'grandchild.pid');
-      const installed = { node: process.execPath, npm, python, data: path.join(temp, 'data'), env: { ...process.env, PID_FILE: pidFile, GRANDCHILD_FILE: grandchildFile } };
+      const installed = { node: process.execPath, npm, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env: { ...process.env, PID_FILE: pidFile, GRANDCHILD_FILE: grandchildFile } };
       const pending = runSession({ action: 'build', root, editor, mode: 'local', installed, signals, pause, startupDeadlineMs: Infinity,
         spawnProcess: (...args) => { const child = spawn(...args); children.add(child); child.once('close', () => children.delete(child)); return child; },
       });
@@ -102,4 +102,40 @@ test('checkout bootstrap cache is removed on installer failure before a local bu
     assert.match(result.stdout, /ASTRID_PINOKIO_FAILURE/);
     assert.equal(fs.existsSync(path.join(publicDir, 'bootstrap-venv')), false);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+test('real controlled Stop drains the editor before down and releases the foreground temp lock', { skip: process.platform === 'win32' }, async () => {
+  const { requestGracefulStop } = await import('../pinokio/lifecycle.mjs');
+  const { spawnSync } = await import('node:child_process');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-graceful-stop-'));
+  const root = path.join(temp, 'root'); const editor = path.join(temp, 'editor');
+  const signals = new EventEmitter();
+  const children = new Set();
+  let stop;
+  try {
+    fs.mkdirSync(root); fs.mkdirSync(path.join(editor, 'scripts'), { recursive: true });
+    const realPython = spawnSync('python3', ['-I', '-c', 'import sys;print(sys.executable)'], { encoding: 'utf8' }).stdout.trim();
+    const env = { ...process.env, PID_FILE: path.join(temp, 'runtime.pid'), EDITOR_PID: path.join(temp, 'editor.pid'), EVENTS: path.join(temp, 'events'), TEST_LOCK: path.join(temp, 'installer.lock') };
+    writeExecutable(path.join(root, 'run'), `#!${realPython}\nimport os,sys,fcntl,signal,time\nfrom pathlib import Path\nlock=open(os.environ['TEST_LOCK'],'w+b')\nfcntl.flock(lock,fcntl.LOCK_EX)\nPath(os.environ['PID_FILE']).write_text(str(os.getpid()))\ndef stop(*args):\n    with open(os.environ['EVENTS'],'a') as out: out.write('runtime-clean\\n')\n    Path(os.environ['PID_FILE']).unlink()\n    sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\nwhile True: time.sleep(1)\n`);
+    const python = path.join(temp, 'python-cli');
+    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const live=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){fs.appendFileSync(process.env.EVENTS,'down\\n');process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy:live},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
+    fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';fs.writeFileSync(process.env.EDITOR_PID,String(process.pid));process.on('SIGTERM',()=>{fs.appendFileSync(process.env.EVENTS,'editor-stop\\n');process.exit(0)});setInterval(()=>{},1000);`);
+    await runSession({ action: 'serve', root, editor, mode: 'local', signals, pause, startupDeadlineMs: Infinity,
+      installed: { node: process.execPath, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env },
+      spawnProcess: (...args) => { const child = spawn(...args); children.add(child); child.once('close', () => children.delete(child)); return child; },
+      portOpen: async () => false,
+      request: async (url) => url.endsWith('workspace.json')
+        ? { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'fixture', realmId: 'fixture' }) }
+        : { ok: fs.existsSync(env.EDITOR_PID) },
+      output: () => { stop = requestGracefulStop(root); },
+    });
+    assert.equal((await stop).ok, true);
+    assert.deepEqual(fs.readFileSync(env.EVENTS, 'utf8').trim().split('\n'), ['editor-stop', 'down', 'runtime-clean']);
+    assert.equal(children.size, 0);
+    assert.equal(fs.existsSync(path.join(root, 'pinokio-control.json')), false);
+    assert.equal(spawnSync(realPython, ['-I', '-c', 'import fcntl,sys\nf=open(sys.argv[1],"r+b")\nfcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)', env.TEST_LOCK]).status, 0);
+  } finally {
+    for (const child of children) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
