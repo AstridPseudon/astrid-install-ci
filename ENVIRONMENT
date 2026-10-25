@@ -1,0 +1,7 @@
+# Pinokio selects and starts start.js by default after Astrid is installed.
+# Set ASTRID_AUTOSTART=0 to disable that default Start selection.
+ASTRID_AUTOSTART=1
+
+# Bootstrap URL is shared by macOS/Linux and Windows; point it at a local test
+# bootstrap when testing before https://astrid.haus/install has the new flags.
+ASTRID_INSTALL_URL=https://astrid.haus/install
