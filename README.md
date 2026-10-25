@@ -11,6 +11,8 @@ Astrid is a video editor. This Pinokio app runs it on your computer, and Pinokio
 
 Started with Install? **Switch to fully local** moves you over at any time.
 
+To go back, choose Reset, then Install. Your projects stay.
+
 ## Using Astrid
 
 - **Start** starts Astrid. When it's ready, **Open Astrid** appears.
@@ -39,6 +41,6 @@ If you installed Astrid with its install command, uninstall that copy first. You
 In Pinokio's `ENVIRONMENT` file:
 
 - `ASTRID_APP_REF`: leave it empty for normal use. To test an astrid-app branch, set it (for example `feat/pinokio`). After installing fully local, Reset and install again to change it.
-- `ASTRID_AUTOSTART=0`: don't start Astrid when you open it in Pinokio.
+- Pinokio's `PINOKIO_SCRIPT_DEFAULT=false` setting is the off switch for automatic Start.
 
 How it works: [commands and installer interface](docs/INTERFACE.md) and [validation notes](docs/VALIDATION.md).

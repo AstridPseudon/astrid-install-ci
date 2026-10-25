@@ -20,15 +20,19 @@ module.exports = {
     if (info.running('pinokio/start.js')) {
       const local = info.local('pinokio/start.js') || {};
       const ready = local.url === app.modeOpenTarget(mode).href && local.mode === mode;
-      return [ready ? openItem({ href: local.url, popout: mode !== 'local' }) : infoItem('Starting Astrid…'),
-        item('Stop', 'stop', 'stop')];
+      if (!ready) return [infoItem('Starting Astrid…'), item('Stop', 'stop', 'stop')];
+      const open = mode === 'local'
+        ? openItem({ href: local.url, popout: false })
+        : openItem({ href: '/', target_full: local.url, popout: true });
+      open.default = true;
+      return [open, item('Stop', 'stop', 'stop')];
     }
     const port = await app.probeDoor();
-    if (port.kind === 'astrid') return [infoItem('Astrid is already running on this computer.'), openItem(app.modeOpenTarget('backend'))];
+    if (port.kind === 'astrid') return [infoItem('Astrid is already running on this computer. Use Open Astrid, or stop that copy to run Astrid from Pinokio.'), openItem(app.modeOpenTarget('backend'))];
     if (port.kind === 'occupied') return [infoItem("Another program is using port 17340, so Astrid can't start. Close it, then try again.")];
     if (!installed) return [item('Install', 'install', 'download'), item('Install fully local', 'install-local', 'laptop')];
     const items = [item('Start', 'start', 'play'), item('Update', 'update', 'rotate')];
-    if (app.setting('ASTRID_AUTOSTART', '1') !== '0') items[0].default = true;
+    items[0].default = true;
     if (mode === 'backend') items.push(item('Switch to fully local', 'add-local', 'laptop'));
     items.push(item('Reset', 'reset', 'broom'), item('Uninstall', 'uninstall', 'trash-can-arrow-up'),
       item('Uninstall and delete all Astrid data…', 'uninstall-delete-data', 'triangle-exclamation'));

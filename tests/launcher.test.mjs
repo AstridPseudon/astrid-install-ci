@@ -43,7 +43,8 @@ for (const platform of ['darwin', 'linux', 'win32']) {
         const map = {
           install: [expected.install], 'install-local': fullLocal,
           'add-local': [expected.pull, expected.localUpdate, expected.build],
-          update: mode === 'local' ? [expected.pull, expected.localUpdate, expected.build] : [expected.update],
+          update: [app.shellStep(app.launcherPullMessage()).params.message,
+            ...(mode === 'local' ? [expected.pull, expected.localUpdate, expected.build] : [expected.update])],
           start: [expected[mode]], stop: [], reset: [], uninstall: [expected.uninstall],
           'uninstall-delete-data': [expected.delete],
         };
@@ -96,28 +97,77 @@ test('menu: all operation, installation, starting, ready, external and conflict 
     let local = {};
     const info = { exists: () => Boolean(mode), running: (uri) => uri === running, local: () => local };
     const { menu } = load('pinokio.js', app);
-    const labels = async () => plain((await menu({}, info)).map((item) => item.text));
     const idle = mode ? ['Start', 'Update', ...(mode === 'backend' ? ['Switch to fully local'] : []), 'Reset', 'Uninstall', 'Uninstall and delete all Astrid data…'] : ['Install', 'Install fully local'];
-    assert.deepEqual(await labels(), idle);
+    const idleItems = await menu({}, info);
+    assert.deepEqual(plain(idleItems.map((item) => item.text)), idle);
+    assert.equal(idleItems.filter((item) => item.default).length, mode ? 1 : 0);
+    if (mode) assert.equal(idleItems[0].default, true);
     for (const name of [...scripts.filter((name) => name !== 'start'), 'stop']) {
       running = `pinokio/${name}.js`;
       const items = await menu({}, info);
       assert.equal(items.length, 1);
       assert.equal(items[0].href, undefined);
+      assert.equal(items[0].default, undefined);
     }
     running = 'pinokio/start.js';
-    assert.deepEqual(await labels(), ['Starting Astrid…', 'Stop']);
+    const pending = await menu({}, info);
+    assert.deepEqual(plain(pending.map((item) => item.text)), ['Starting Astrid…', 'Stop']);
+    assert.equal(pending.some((item) => item.default), false);
     local = app.localSetOpenTarget(mode);
-    assert.deepEqual(await labels(), ['Open Astrid', 'Stop']);
-    assert.equal((await menu({}, info))[0].popout, mode !== 'local');
+    const ready = await menu({}, info);
+    assert.deepEqual(plain(ready.map((item) => item.text)), ['Open Astrid', 'Stop']);
+    assert.equal(ready[0].default, true);
+    assert.equal(ready[0].popout, mode !== 'local');
+    assert.equal(ready[0].target_full, mode === 'local' ? undefined : local.url);
+    assert.equal(ready[0].href, mode === 'local' ? local.url : '/');
+    assert.equal(ready[1].default, undefined);
     running = '';
     probeKind = 'astrid';
-    assert.deepEqual(await labels(), ['Astrid is already running on this computer.', 'Open Astrid']);
-    assert.equal((await menu({}, info))[1].href, library.HOSTED_OPEN_URL);
+    const external = await menu({}, info);
+    assert.deepEqual(plain(external.map((item) => item.text)), ['Astrid is already running on this computer. Use Open Astrid, or stop that copy to run Astrid from Pinokio.', 'Open Astrid']);
+    assert.equal(external[1].href, library.HOSTED_OPEN_URL);
+    assert.equal(external.some((item) => item.default), false);
     probeKind = 'occupied';
-    assert.match((await labels())[0], /Another program/);
-    assert.equal((await menu({}, info))[0].href, undefined);
+    const conflict = await menu({}, info);
+    assert.match(conflict[0].text, /Another program/);
+    assert.equal(conflict[0].href, undefined);
+    assert.equal(conflict[0].default, undefined);
   }
+});
+
+test('Update pulls the launcher after the stop and lock check and fails before Astrid update on pull error', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
+    const app = fakeApp(platform, 'feat/pinokio', mode);
+    const script = await load('pinokio/update.js', app)({}, {});
+    const [stop, pull, portCheck] = script.run;
+    assert.equal(stop.method, app.stopOwnedStart);
+    assert.equal(pull.method, 'shell.run');
+    assert.equal(pull.params.path, app.APP_DIR);
+    assert.match(pull.params.message, /git pull --ff-only/);
+    assert.match(pull.params.message, /update the Pinokio launcher\./);
+    assert.match(pull.params.message, /undo those edits, then choose Update again\./);
+    assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
+    assert.equal(portCheck.method, app.ensureDoorPortFree);
+    const astridUpdate = script.run.findIndex((step) => step.method === 'shell.run' && step.params.message.includes('--update'));
+    assert.ok(astridUpdate > 2, `Astrid update follows the launcher pull (${platform}, ${mode})`);
+  }
+  assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");
+});
+
+test('settings use ENVIRONMENT first and fall back to the shipped _ENVIRONMENT template', () => {
+  const base = '/Pinokio Apps/Astrid';
+  const values = new Map([
+    [`${base}/_ENVIRONMENT`, 'ASTRID_APP_REF=feat/pinokio\nOTHER=default'],
+  ]);
+  const app = library.createApp({ appDirectory: base, environment: {}, filesystem: {
+    readFileSync(file) { if (!values.has(file)) throw new Error('absent'); return values.get(file); },
+  } });
+  assert.equal(app.setting('ASTRID_APP_REF'), 'feat/pinokio');
+  values.set(`${base}/ENVIRONMENT`, 'ASTRID_APP_REF=\nOTHER=generated');
+  assert.equal(app.setting('ASTRID_APP_REF'), '');
+  assert.equal(app.setting('OTHER'), 'generated');
+  values.set(`${base}/ENVIRONMENT`, 'OTHER=generated');
+  assert.equal(app.setting('ASTRID_APP_REF'), 'feat/pinokio');
 });
 
 test('port classification and preflight use injected requests; no live port probes', async () => {

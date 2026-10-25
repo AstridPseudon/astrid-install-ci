@@ -1,6 +1,0 @@
-# Leave empty for normal use. Testers: an astrid-app branch or tag (for
-# example feat/pinokio) installs that version of Astrid and its editor.
-ASTRID_APP_REF=feat/pinokio
-
-# 1 starts Astrid when you open it in Pinokio. Set 0 to start it yourself.
-ASTRID_AUTOSTART=1

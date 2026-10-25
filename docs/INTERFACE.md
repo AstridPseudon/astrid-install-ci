@@ -4,7 +4,7 @@ These are the implemented commands. `A` is the absolute Pinokio app directory, `
 
 ## Sources and bootstrap
 
-`ENVIRONMENT` has one source-selection hook: `ASTRID_APP_REF`, empty by default.
+Pinokio seeds its generated `ENVIRONMENT` from `_ENVIRONMENT`. The launcher reads `ASTRID_APP_REF` from the process environment first, then `ENVIRONMENT`, then `_ENVIRONMENT`; an empty value selects production.
 
 | Source | macOS / Linux bootstrap | Windows bootstrap | Manifest | Editor clone |
 | --- | --- | --- | --- | --- |
@@ -113,7 +113,7 @@ After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done:
 | External Astrid on 17340 | Explanation; Open Astrid only (hosted URL) |
 | Other program on 17340 | Conflict message only |
 
-Start is the default stopped menu item unless `ASTRID_AUTOSTART=0`. Hosted Open is `https://astrid.haus/?connect=1`, `popout: true`. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. The owned running menu reads the published URL and does not synthesize Open while startup is pending.
+Start is the default stopped menu item. Hosted Open displays `https://astrid.haus/?connect=1` in Pinokio's popout panel; its relative href keeps Pinokio's default-selection scheme check on the app page, and `target_full` carries the hosted URL. The panel opens the browser only after a click. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. The owned running menu reads the published URL and does not synthesize Open while startup is pending; once ready, Open Astrid is the default menu item.
 
 ## Stop hook, graceful shutdown and installer lock
 

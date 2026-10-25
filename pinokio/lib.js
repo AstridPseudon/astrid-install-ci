@@ -23,14 +23,44 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
 
   function setting(name, fallback = '') {
     if (environment[name] !== undefined) return environment[name];
-    try {
-      const lines = filesystem.readFileSync(paths.join(APP_DIR, 'ENVIRONMENT'), 'utf8').split(/\r?\n/);
-      for (const line of lines) {
-        const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-        if (match?.[1] === name) return match[2].replace(/^(?:"(.*)"|'(.*)')$/, (_all, a, b) => a ?? b);
-      }
-    } catch { /* ENVIRONMENT is optional. */ }
+    for (const file of ['ENVIRONMENT', '_ENVIRONMENT']) {
+      try {
+        const lines = filesystem.readFileSync(paths.join(APP_DIR, file), 'utf8').split(/\r?\n/);
+        for (const line of lines) {
+          const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+          if (match?.[1] === name) return match[2].replace(/^(?:"(.*)"|'(.*)')$/, (_all, a, b) => a ?? b);
+        }
+      } catch { /* Either Pinokio environment file is optional. */ }
+    }
     return fallback;
+  }
+
+  function launcherPullMessage() {
+    const failure = CONSTANTS.LAUNCHER_PULL_FAILURE;
+    if (isWindows) {
+      return [
+        'try {',
+        'git pull --ff-only',
+        `if ($LASTEXITCODE -ne 0) { throw ${q(failure)} }`,
+        '} catch {',
+        `Write-Output ${q(failure)}`,
+        'throw',
+        '}',
+      ].join('\n');
+    }
+    return `git pull --ff-only || { printf '%s\\n' ${q(failure)} >&2; exit 1; }`;
+  }
+
+  function shellStep(message, { cwd = APP_DIR, env, on } = {}) {
+    // Pinokio resolves a shell at its prompt even after a nonzero exit. Emit
+    // a dedicated failure event so the next step (especially local.set/save)
+    // cannot run after a failed command. Split the marker in source to avoid
+    // matching the terminal's echo of the submitted command itself.
+    const wrapped = isWindows
+      ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${message}\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
+      : `bash --noprofile --norc -c ${posix.quote(`set -eu\n${message}`)}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi`;
+    return { method: 'shell.run', params: { shell: shellName, path: cwd, message: wrapped, input: false,
+      ...(env ? { env } : {}), on: [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, ...(on || [])] } };
   }
 
   function appRef() {
@@ -54,17 +84,6 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     });
   }
 
-  function shellStep(message, { cwd = APP_DIR, env, on } = {}) {
-    // Pinokio resolves a shell at its prompt even after a nonzero exit. Emit
-    // a dedicated failure event so the next step (especially local.set/save)
-    // cannot run after a failed command. Split the marker in source to avoid
-    // matching the terminal's echo of the submitted command itself.
-    const wrapped = isWindows
-      ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${message}\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
-      : `bash --noprofile --norc -c ${posix.quote(`set -eu\n${message}`)}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi`;
-    return { method: 'shell.run', params: { shell: shellName, path: cwd, message: wrapped, input: false,
-      ...(env ? { env } : {}), on: [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, ...(on || [])] } };
-  }
   const customStep = (method) => ({ method });
   const ensureProgramDirectory = () => filesystem.mkdirSync(PROGRAMS_DIR, { recursive: true });
   function readInstallMode() {
@@ -180,7 +199,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   }
   return { APP_DIR, PROGRAMS_DIR, BACKEND_ROOT, EDITOR_DIR, MODE_FILE, isWindows, shellName, paths,
     getPaths: () => ({ root: BACKEND_ROOT, editor: EDITOR_DIR }), setting, appRef, bootstrapScript,
-    shellStep, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
+    shellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
     stopHook, stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),
@@ -191,7 +210,8 @@ const EDITOR_REPOSITORY = 'https://github.com/banodoco/astrid-app';
 const DOOR_HEALTH_URL = 'http://127.0.0.1:17340/api/runtime/v1/health';
 const HOSTED_OPEN_URL = 'https://astrid.haus/?connect=1';
 const LOCAL_OPEN_URL = 'http://127.0.0.1:5180/tools/video-editor?connect=1';
-const CONSTANTS = { EDITOR_REPOSITORY, DOOR_HEALTH_URL, HOSTED_OPEN_URL, LOCAL_OPEN_URL };
+const CONSTANTS = { EDITOR_REPOSITORY, DOOR_HEALTH_URL, HOSTED_OPEN_URL, LOCAL_OPEN_URL,
+  LAUNCHER_PULL_FAILURE: "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again." };
 function modeOpenTarget(mode) {
   return { href: mode === 'local' ? LOCAL_OPEN_URL : HOSTED_OPEN_URL, popout: mode !== 'local' };
 }

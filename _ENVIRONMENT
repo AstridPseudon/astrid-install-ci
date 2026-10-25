@@ -1,0 +1,2 @@
+# Leave empty for normal Astrid installs. Set a branch here only when testing it.
+ASTRID_APP_REF=
