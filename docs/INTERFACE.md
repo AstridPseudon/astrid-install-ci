@@ -105,8 +105,8 @@ After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done:
 | State | Menu |
 | --- | --- |
 | No installed mode/run entry, port free | Install; Install fully local |
-| Installed backend, stopped | Start; Update; Add local editor; Reset; Uninstall; Uninstall and permanently delete all data… |
-| Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and permanently delete all data… |
+| Installed backend, stopped | Start; Update; Switch to fully local; Reset; Uninstall; Uninstall and delete all Astrid data… |
+| Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Start running, no published URL | Starting Astrid…; Stop |
 | Ready owned Start | Open Astrid; Stop |
 | Install/add/update/reset/uninstall/delete/stop active | Operation status only |
@@ -154,11 +154,11 @@ A Stop before Runtime readiness has no validated Runtime identity to down: it TE
 
 The control request has a 45-second deadline. The down command is killed if its 25-second budget expires. A failed down or hung editor leaves remaining owned processes for Pinokio's final tree kill. The hook finishes even after graceful failure so forced cleanup can proceed.
 
-The Stop menu, Update, Reset, Uninstall, typed data deletion and Add local editor all call the same `stopOwnedStart` function:
+The Stop menu, Update, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) all call the same `stopOwnedStart` function:
 
 1. If this Start script is active, request graceful shutdown directly and retain its result. This is necessary because Pinokio's direct-method hook dispatch logs failures but does not propagate them to `api.stop`'s caller.
 2. Always await `kernel.api.stop` for the absolute Start URI, even after graceful failure. Its native stop hook repeats the same idempotent request; normally the completed supervisor record is already gone and this is a no-op.
-3. Wait for the actual installer lock, even when Start was already idle. A failed grace/force/lock check throws **“Stop Astrid in Pinokio first, then try again.”** and prevents subsequent Git/bootstrap/build/removal/mode-write steps. A successful forced fallback does not conceal a graceful failure; retrying after cleanup can proceed.
+3. Wait for the actual installer lock, even when Start was already idle. A failed grace/force/lock check throws **“Astrid is still running. Stop it in Pinokio, then try again.”** and prevents subsequent Git/bootstrap/build/removal/mode-write steps. A successful forced fallback does not conceal a graceful failure; retrying after cleanup can proceed.
 
 If the controller is completely unresponsive, the direct request and the hook request can each consume their 45-second bound before forced cleanup. Lock verification then has its own 10-second poll budget and 12-second subprocess deadline. These are production operation bounds; no test has a harness timeout.
 

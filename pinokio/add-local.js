@@ -1,7 +1,7 @@
 'use strict';
 const app = require('./lib');
 module.exports = async () => {
-  if (app.readInstallMode() !== 'backend') throw new Error('Add local editor requires a back-end-only install.');
+  if (app.readInstallMode() !== 'backend') throw new Error('Astrid is already fully local.');
   return { run: [
     app.customStep(app.stopOwnedStart),
     app.customStep(app.ensureDoorPortFree),

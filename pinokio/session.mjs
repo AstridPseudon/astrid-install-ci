@@ -15,7 +15,7 @@ export function installation(root, { platform = process.platform, filesystem = f
   const versionRoot = p.join(root, 'versions', version);
   const record = read(p.join(versionRoot, 'version.json'));
   const install = read(p.join(root, 'install.json'));
-  if (install.owner !== 'haus.astrid.runtime' || install.managed_by !== 'pinokio') throw new Error('This is not a Pinokio-managed Astrid installation.');
+  if (install.owner !== 'haus.astrid.runtime' || install.managed_by !== 'pinokio') throw new Error("This copy of Astrid wasn't installed with Pinokio.");
   for (const value of [record.root, record.python, record.profile, record.env?.ASTRID_NODE_EXECUTABLE, install.data_root]) {
     if (typeof value !== 'string' || !p.isAbsolute(value)) throw new Error('Incomplete Astrid installation record.');
   }
@@ -127,7 +127,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
       child.once('error', (error) => { item.closed = true; reject(error); if (persistent) fail(error); });
       child.once('close', (code, signal) => {
         item.closed = true;
-        if (persistent && !stopping) fail(new Error(`Astrid owned process exited (${signal || code}).`));
+        if (persistent && !stopping) fail(new Error(`Astrid quit unexpectedly (${signal || code}).`));
         resolve(code);
       });
     });
@@ -160,7 +160,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
       if (await Promise.race([check(), failed])) return;
       await Promise.race([pause(500), failed]);
     }
-    throw new Error(`${description} did not become ready. Stop Astrid and inspect its Pinokio terminal.`);
+    throw new Error(`${description} didn't start in time. Check the messages above, then try again.`);
   }
   async function terminate(item) {
     if (item.released || !item.child.pid) return;
@@ -233,13 +233,13 @@ export async function runSession({ action, root, editor, mode, platform = proces
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.on(signal, onSignal);
   try {
     // Never attach the editor to someone else's same-data-root Runtime.
-    if (await runtimeHealthy()) throw new Error('An Astrid Runtime already uses this data root. Stop it with its owner first.');
-    if (mode === 'local' && action === 'serve' && await portOpen(5180)) throw new Error('Port 5180 is already in use. Stop that editor or program first.');
+    if (await runtimeHealthy()) throw new Error('Another Astrid is already running with your projects. Stop it, then try again.');
+    if (mode === 'local' && action === 'serve' && await portOpen(5180)) throw new Error("Another program is using port 5180, so Astrid's editor can't start. Close it, then try again.");
     controller = await openController(root, requestStop);
     if (action === 'build') await checked(specs.dependencies, { cwd: editor });
     discovery = undefined;
     runtimeItem = launch(specs.runtime, { persistent: true });
-    await waitUntil(runtimeHealthy, 'Astrid Runtime');
+    await waitUntil(runtimeHealthy, 'Astrid');
     if (action === 'build') {
       await checked(specs.build, { cwd: editor });
     } else {
@@ -258,7 +258,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
           const body = await response.json();
           return response.status === 200 && body.status === 'ok' && body.protocol === 'workspace.v1';
         } catch { return false; }
-      }, mode === 'local' ? 'Astrid editor' : 'Astrid door');
+      }, mode === 'local' ? "Astrid's editor" : 'Astrid');
       if (failure) throw failure;
       output('ASTRID_PINOKIO_READY');
       await failed;

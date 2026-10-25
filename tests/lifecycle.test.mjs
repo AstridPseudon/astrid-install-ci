@@ -80,7 +80,7 @@ test('actual lock helper rejects a held temp lock, accepts release and creates n
     await once(holder.stdout, 'data');
     const args = ['-I', '-c', 'import runpy,sys\nsys.path.insert(0,sys.argv.pop(1))\nrunpy.run_path(sys.argv.pop(1),run_name="__main__")', temp, helper, '0'];
     const busy = await executePython(args, { ...process.env, TEST_LOCK: lock });
-    assert.notEqual(busy.code, 0); assert.match(busy.output, /Stop Astrid in Pinokio first/);
+    assert.notEqual(busy.code, 0); assert.match(busy.output, /Astrid is still running\. Stop it in Pinokio/);
     holder.kill('SIGTERM'); await once(holder, 'close'); holder = null;
     assert.equal((await executePython(args, { ...process.env, TEST_LOCK: lock })).code, 0);
     fs.unlinkSync(lock);

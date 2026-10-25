@@ -8,10 +8,10 @@ module.exports = {
   version: '8.0.0',
   menu: async (_kernel, info) => {
     const operations = [
-      ['install', 'Installing back end…'], ['install-local', 'Installing fully local…'],
-      ['add-local', 'Adding local editor…'], ['update', 'Updating Astrid…'],
+      ['install', 'Installing Astrid…'], ['install-local', 'Installing Astrid fully local…'],
+      ['add-local', 'Switching to fully local…'], ['update', 'Updating Astrid…'],
       ['reset', 'Resetting Astrid…'], ['uninstall', 'Uninstalling Astrid…'],
-      ['uninstall-delete-data', 'Uninstalling and deleting Astrid data…'], ['stop', 'Stopping Astrid…'],
+      ['uninstall-delete-data', 'Uninstalling Astrid and deleting its data…'], ['stop', 'Stopping Astrid…'],
     ];
     const active = operations.find(([script]) => info.running(`pinokio/${script}.js`));
     if (active) return [infoItem(active[1])];
@@ -24,14 +24,14 @@ module.exports = {
         item('Stop', 'stop', 'stop')];
     }
     const port = await app.probeDoor();
-    if (port.kind === 'astrid') return [infoItem('Astrid is already running on port 17340.'), openItem(app.modeOpenTarget('backend'))];
-    if (port.kind === 'occupied') return [infoItem('Another program is using port 17340. Stop it before starting Astrid.')];
+    if (port.kind === 'astrid') return [infoItem('Astrid is already running on this computer.'), openItem(app.modeOpenTarget('backend'))];
+    if (port.kind === 'occupied') return [infoItem("Another program is using port 17340, so Astrid can't start. Close it, then try again.")];
     if (!installed) return [item('Install', 'install', 'download'), item('Install fully local', 'install-local', 'laptop')];
     const items = [item('Start', 'start', 'play'), item('Update', 'update', 'rotate')];
     if (app.setting('ASTRID_AUTOSTART', '1') !== '0') items[0].default = true;
-    if (mode === 'backend') items.push(item('Add local editor', 'add-local', 'laptop'));
+    if (mode === 'backend') items.push(item('Switch to fully local', 'add-local', 'laptop'));
     items.push(item('Reset', 'reset', 'broom'), item('Uninstall', 'uninstall', 'trash-can-arrow-up'),
-      item('Uninstall and permanently delete all data…', 'uninstall-delete-data', 'triangle-exclamation'));
+      item('Uninstall and delete all Astrid data…', 'uninstall-delete-data', 'triangle-exclamation'));
     return items;
   },
 };

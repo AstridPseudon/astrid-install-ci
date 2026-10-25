@@ -31,7 +31,7 @@ def wait_for_lock(seconds: float) -> None:
                 platform.unlock_file(lock.fileno())
                 return
         if time.monotonic() >= deadline:
-            raise SystemExit("Stop Astrid in Pinokio first, then try again.")
+            raise SystemExit("Astrid is still running. Stop it in Pinokio, then try again.")
         time.sleep(0.1)
 
 

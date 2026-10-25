@@ -1,18 +1,44 @@
-# Astrid for Pinokio
+# Astrid
 
-Astrid is a community beta for macOS, Linux and Windows. Pinokio owns the processes; Astrid's installer installs the back end.
+Astrid is a video editor. This Pinokio app runs it on your computer, and Pinokio starts, stops and updates it for you. It works on macOS, Linux and Windows.
 
-- **Install** installs the back end. Open the editor at [astrid.haus](https://astrid.haus/?connect=1).
-- **Install fully local** also checks out and builds the editor at `http://127.0.0.1:5180/tools/video-editor?connect=1`. The astrid.haus connection is off.
+**Beta.** Astrid on Pinokio is new, so there may be rough edges. If something goes wrong, [tell us](https://github.com/banodoco/astrid-pinokio/issues).
 
-Both choices use one Runtime. Program files live in `app/astrid`, the optional editor in `app/editor`, and the mode in `app/install-mode.json`. Projects and Runtime data stay in the data root recorded by the installer, outside these program files.
+## Two ways to install
 
-**Start** publishes Open only after readiness. **Stop** stops this launcher's process tree. **Update** and **Add local editor** stop it first; local builds use the editor checkout's bootstrap and manifest so both halves match. Start again after an update or mode change.
+- **Install:** Astrid runs on your computer, and you open it at [astrid.haus](https://astrid.haus) in Chrome or Edge. The first time, the browser asks to let astrid.haus reach Astrid on this computer. Choose Allow.
+- **Install fully local:** the editor runs on your computer too, at `http://127.0.0.1:5180`. It needs no browser permission, and it opens without the internet (online models still need it). It takes a little longer to install, and astrid.haus won't connect to it.
 
-**Reset** removes only `app/`, keeping data. **Uninstall** stops Astrid and runs its uninstaller, keeping data, then removes program files. The separate **Uninstall and permanently delete all data…** action requires typing `DELETE`.
+Started with Install? **Switch to fully local** moves you over at any time.
 
-In Pinokio's `ENVIRONMENT` file, leave `ASTRID_APP_REF` empty for production. For branch testing, set it to `feat/pinokio` (or another astrid-app branch). This selects the ref's raw GitHub bootstrap and manifest and the matching editor branch. Reset and reinstall to change an existing local editor's branch. `ASTRID_AUTOSTART=0` disables the default Start menu selection.
+## Using Astrid
 
-If port 17340 already answers as Astrid, the menu explains and offers Open. If another program holds it, the menu reports the conflict. A local Start also refuses an occupied port 5180 or an already healthy Runtime at the selected data root.
+- **Start** starts Astrid. When it's ready, **Open Astrid** appears.
+- **Stop** stops it.
+- **Update** brings Astrid up to date. It stops Astrid first, so choose Start again afterwards.
+- **Reset** removes Astrid's program files so you can install again.
+- **Uninstall** removes Astrid.
+- **Uninstall and delete all Astrid data…** also deletes your projects, for good. You type `DELETE` to confirm.
 
-See [the command and installer interface](docs/INTERFACE.md) and [validation and remaining native checks](docs/VALIDATION.md).
+Your projects are kept outside this app's folder, so Update, Reset and Uninstall leave them alone.
+
+## Already installed Astrid another way?
+
+If you installed Astrid with its install command, uninstall that copy first. Your projects stay, and Astrid in Pinokio picks them up.
+
+- macOS and Linux: `curl -fsSL https://astrid.haus/install | sh -s -- --uninstall`
+- Windows (PowerShell): `& ([scriptblock]::Create((irm https://astrid.haus/install.ps1))) --uninstall`
+
+## If Astrid won't start
+
+- **"Astrid is already running on this computer."** Another copy of Astrid is running. Use Open Astrid, or stop that copy to run Astrid from Pinokio.
+- **"Another program is using port 17340…"** Close that program, then try again. Fully local also needs port 5180.
+
+## For testers
+
+In Pinokio's `ENVIRONMENT` file:
+
+- `ASTRID_APP_REF`: leave it empty for normal use. To test an astrid-app branch, set it (for example `feat/pinokio`). After installing fully local, Reset and install again to change it.
+- `ASTRID_AUTOSTART=0`: don't start Astrid when you open it in Pinokio.
+
+How it works: [commands and installer interface](docs/INTERFACE.md) and [validation notes](docs/VALIDATION.md).

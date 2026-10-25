@@ -86,10 +86,10 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   }
   function validateExistingEditorCheckout() {
     if (!filesystem.existsSync(EDITOR_DIR)) return false;
-    if (!filesystem.existsSync(paths.join(EDITOR_DIR, '.git'))) throw new Error('The editor folder is not a Git checkout. Reset or move it first.');
+    if (!filesystem.existsSync(paths.join(EDITOR_DIR, '.git'))) throw new Error("Astrid's editor files are damaged. Choose Reset, then install again.");
     const result = spawnSync('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], { encoding: 'utf8', windowsHide: true });
     if (result.status !== 0 || result.stdout.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase() !== EDITOR_REPOSITORY.toLowerCase()) {
-      throw new Error(`The editor checkout must use ${EDITOR_REPOSITORY}.`);
+      throw new Error(`Astrid's editor folder doesn't come from ${EDITOR_REPOSITORY}. Choose Reset, then install again.`);
     }
     return true;
   }
@@ -160,21 +160,21 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     try { await operations.waitForInstallerLock(BACKEND_ROOT, options); }
     catch (error) { errors.push(error.message); }
     if (errors.length) {
-      const prefix = 'Stop Astrid in Pinokio first, then try again.';
+      const prefix = 'Astrid is still running. Stop it in Pinokio, then try again.';
       const details = errors.filter((error) => !error.includes(prefix)).join(' ');
       const message = `${prefix}${details ? ` ${details}` : ''}`;
       ondata?.({ raw: `${message}\r\n` });
       throw new Error(message);
     }
-    ondata?.({ raw: 'Astrid stopped; installer lock is free.\r\n' });
+    ondata?.({ raw: 'Astrid stopped.\r\n' });
     return { stopped: active, lockFree: true };
   }
   async function ensureDoorPortFree(_req, ondata) {
     const result = await probe();
     if (result.kind === 'free') return { free: true };
     const message = result.kind === 'astrid'
-      ? 'Astrid is already running on port 17340. Use Open Astrid; stop that instance before starting this install.'
-      : 'Another program is using port 17340. Stop it before starting Astrid.';
+      ? 'Astrid is already running on this computer. Stop it, then try again.'
+      : "Another program is using port 17340, so Astrid can't start. Close it, then try again.";
     ondata?.({ raw: message });
     throw new Error(message);
   }

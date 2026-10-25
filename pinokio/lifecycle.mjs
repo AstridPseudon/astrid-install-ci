@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-export const STOP_FIRST = 'Stop Astrid in Pinokio first, then try again.';
+export const STOP_FIRST = 'Astrid is still running. Stop it in Pinokio, then try again.';
 export const CONTROL_FILE = 'pinokio-control.json';
 export const GRACE_MS = 45_000;
 export const DOWN_MS = 25_000;

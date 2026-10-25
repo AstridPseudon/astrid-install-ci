@@ -5,7 +5,7 @@ module.exports = async () => {
   // Pinokio also resolves this module while stopping it. Defer validation to
   // execution so Stop/Reset still work after a partial or damaged install.
   if (!mode) return { on: { stop: app.stopHook() }, run: [app.customStep(async () => {
-    throw new Error('Astrid install mode is missing. Reinstall Astrid from Pinokio.');
+    throw new Error("Astrid isn't fully installed. Choose Reset, then install again.");
   })] };
   return { daemon: true, on: { stop: app.stopHook() }, run: [
     app.customStep(app.ensureDoorPortFree),

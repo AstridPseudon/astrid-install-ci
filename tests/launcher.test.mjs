@@ -50,7 +50,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
         for (const name of scripts) {
           const module = load(`pinokio/${name}.js`, app);
           if (name === 'add-local' && mode === 'local') {
-            await assert.rejects(module({}, {}), /back-end-only/);
+            await assert.rejects(module({}, {}), /already fully local/);
             continue;
           }
           const script = typeof module === 'function' ? await module({}, {}) : module;
@@ -70,7 +70,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
           }
           if (name === 'reset') assert.equal(shells.length, 0);
           if (name === 'uninstall-delete-data') {
-            await assert.rejects(script.run[1].method({ input: { confirmation: 'delete' } }), /cancelled/);
+            await assert.rejects(script.run[1].method({ input: { confirmation: 'delete' } }), /Cancelled, so nothing was deleted/);
             assert.deepEqual(plain(await script.run[1].method({ input: { confirmation: 'DELETE' } })), { confirmed: true });
             assert.equal(script.run[2].method, app.stopOwnedStart);
           }
@@ -97,7 +97,7 @@ test('menu: all operation, installation, starting, ready, external and conflict 
     const info = { exists: () => Boolean(mode), running: (uri) => uri === running, local: () => local };
     const { menu } = load('pinokio.js', app);
     const labels = async () => plain((await menu({}, info)).map((item) => item.text));
-    const idle = mode ? ['Start', 'Update', ...(mode === 'backend' ? ['Add local editor'] : []), 'Reset', 'Uninstall', 'Uninstall and permanently delete all data…'] : ['Install', 'Install fully local'];
+    const idle = mode ? ['Start', 'Update', ...(mode === 'backend' ? ['Switch to fully local'] : []), 'Reset', 'Uninstall', 'Uninstall and delete all Astrid data…'] : ['Install', 'Install fully local'];
     assert.deepEqual(await labels(), idle);
     for (const name of [...scripts.filter((name) => name !== 'start'), 'stop']) {
       running = `pinokio/${name}.js`;
@@ -112,7 +112,7 @@ test('menu: all operation, installation, starting, ready, external and conflict 
     assert.equal((await menu({}, info))[0].popout, mode !== 'local');
     running = '';
     probeKind = 'astrid';
-    assert.deepEqual(await labels(), ['Astrid is already running on port 17340.', 'Open Astrid']);
+    assert.deepEqual(await labels(), ['Astrid is already running on this computer.', 'Open Astrid']);
     assert.equal((await menu({}, info))[1].href, library.HOSTED_OPEN_URL);
     probeKind = 'occupied';
     assert.match((await labels())[0], /Another program/);
@@ -238,7 +238,7 @@ test('serve only announces ready after correct health; signal/error/conflict cle
   }
   for (const setting of [{ occupied: true }, { earlyExit: true }]) {
     const h = sessionHarness(setting);
-    await assert.rejects(runSession({ ...h.options, action: 'serve', mode: 'local', output: () => assert.fail('published before readiness') }), /5180|owned process exited/);
+    await assert.rejects(runSession({ ...h.options, action: 'serve', mode: 'local', output: () => assert.fail('published before readiness') }), /5180|quit unexpectedly/);
     assert.equal(h.active.size, 0);
   }
 });
@@ -257,7 +257,7 @@ test('Stop of an idle/partial install and resolving Start without a mode remain 
   const result = await app.stopOwnedStart({}, () => {}, { api: { running: {}, stop: () => assert.fail('no owner to stop') } });
   assert.equal(result.stopped, false);
   const script = await load('pinokio/start.js', app)({}, {});
-  await assert.rejects(script.run[0].method(), /install mode is missing/);
+  await assert.rejects(script.run[0].method(), /isn't fully installed/);
 });
 
 
@@ -328,7 +328,7 @@ test('maintenance never mutates after failed grace, forced stop or held installe
     const app = { ...library.createApp({ platform, appDirectory: base.APP_DIR, filesystem, environment: {}, probe: async () => ({ kind: 'free' }),
       lifecycle: {
         requestGracefulStop: async () => { log.push('grace'); if (reason === 'grace') throw new Error('grace failed'); },
-        waitForInstallerLock: async () => { log.push('lock'); if (reason === 'lock') throw new Error('Stop Astrid in Pinokio first, then try again.'); },
+        waitForInstallerLock: async () => { log.push('lock'); if (reason === 'lock') throw new Error('Astrid is still running. Stop it in Pinokio, then try again.'); },
       },
     }), validateExistingEditorCheckout: () => false };
     for (const name of ['update', 'reset', 'uninstall', 'uninstall-delete-data', 'add-local']) {
@@ -343,7 +343,7 @@ test('maintenance never mutates after failed grace, forced stop or held installe
           else if (step.method === 'shell.run') log.push('mutation');
         }
       };
-      await assert.rejects(run(), /Stop Astrid in Pinokio first, then try again/);
+      await assert.rejects(run(), /Astrid is still running\. Stop it in Pinokio, then try again\./);
       assert.deepEqual(log, ['grace', 'force', 'lock']);
     }
   }
