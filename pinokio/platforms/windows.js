@@ -1,91 +1,37 @@
 'use strict';
 
-const path = require('node:path');
+const path = require('node:path').win32;
+const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
 
-function requireAbsoluteWindowsPath(value, label) {
-  if (typeof value !== 'string' || !path.win32.isAbsolute(value)) {
-    throw new TypeError(`${label} must be an absolute Windows path`);
-  }
-  return path.win32.normalize(value);
-}
-
-// PowerShell single-quoted strings escape embedded quotes by doubling them.
-function quotePowerShell(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-function getAppPaths(pinokioAppDir) {
-  const base = requireAbsoluteWindowsPath(pinokioAppDir, 'Pinokio app directory');
-  return {
-    root: path.win32.join(base, 'app', 'astrid'),
-    editor: path.win32.join(base, 'app', 'editor'),
-  };
-}
-
-/** Build a PowerShell command that invokes the hosted bootstrap script. */
-function buildBootstrapScript({
-  root,
-  installerUrl,
-  action,
-  manifest,
-  deleteData = false,
-} = {}) {
-  const installRoot = requireAbsoluteWindowsPath(root, 'Install root');
-  if (typeof installerUrl !== 'string' || !/^https?:\/\//i.test(installerUrl)) {
-    throw new TypeError('installerUrl must be an http or https URL');
-  }
-  const args = [
-    '--root', quotePowerShell(installRoot),
-    '--managed-by', 'pinokio',
+function bootstrap({ root, installerUrl, installerFile, manifest, manifestUrl, action = 'install', deleteData = false }) {
+  const q = quotePowerShell;
+  const args = ['--root', q(root), '--managed-by', 'pinokio'];
+  if (action !== 'install') args.push(`--${action}`);
+  if (deleteData) args.push('--delete-data');
+  if (manifest) args.push('--manifest', q(manifest));
+  const invoke = (file, extra = '') => [
+    `& ${file} ${args.join(' ')}${extra}`,
+    "if ($LASTEXITCODE -ne 0) { throw \"Astrid installer failed (exit $LASTEXITCODE).\" }",
   ];
-  if (action === 'update') args.push('--update');
-  else if (action === 'uninstall') args.push('--uninstall');
-  else if (action !== undefined && action !== 'install') {
-    throw new TypeError("action must be 'install', 'update', or 'uninstall'");
-  }
-  if (deleteData) {
-    if (action !== 'uninstall') throw new TypeError('deleteData is only valid for uninstall');
-    args.push('--delete-data');
-  }
-  if (manifest !== undefined) {
-    args.push('--manifest', quotePowerShell(requireAbsoluteWindowsPath(manifest, 'Manifest path')));
-  }
-
-  return `& ([scriptblock]::Create((irm ${quotePowerShell(installerUrl)}))) ${args.join(' ')}`;
+  if (installerFile) return ["$ErrorActionPreference = 'Stop'", `& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${q(installerFile)} ${args.join(' ')}`, "if ($LASTEXITCODE -ne 0) { throw 'Astrid installer failed.' }"].join('\n');
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
+    "$tmp = Join-Path ([IO.Path]::GetTempPath()) ('astrid-pinokio-' + [Guid]::NewGuid().ToString('N'))",
+    'New-Item -ItemType Directory -Path $tmp | Out-Null',
+    'try {',
+    `  Invoke-WebRequest -UseBasicParsing ${q(installerUrl)} -OutFile (Join-Path $tmp 'install.ps1')`,
+    ...(manifestUrl ? [`  Invoke-WebRequest -UseBasicParsing ${q(manifestUrl)} -OutFile (Join-Path $tmp 'install-manifest.json')`] : []),
+    '  $global:LASTEXITCODE = 0',
+    // ScriptBlock invocation matches the production interface, including its
+    // exception-based failure path. The downloaded file is also reviewable.
+    ...invoke("([scriptblock]::Create((Get-Content -Raw -LiteralPath (Join-Path $tmp 'install.ps1'))))", manifestUrl ? " --manifest (Join-Path $tmp 'install-manifest.json')" : '').map((line) => `  ${line}`),
+    '} finally { Remove-Item -LiteralPath $tmp -Recurse -Force }',
+  ].join('\n');
 }
 
-function buildBootstrapCommand(options = {}) {
-  const script = buildBootstrapScript(options);
-  return {
-    command: 'powershell.exe',
-    args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-  };
+function run(root, args = []) {
+  return `& ${quotePowerShell(path.join(root, 'run.cmd'))}${args.length ? ` ${args.map(quotePowerShell).join(' ')}` : ''}`;
 }
 
-/** Build a PowerShell invocation for root\\run.cmd and passthrough args. */
-function buildRunScript(root, passthroughArgs = []) {
-  const installRoot = requireAbsoluteWindowsPath(root, 'Install root');
-  const runCmd = path.win32.join(installRoot, 'run.cmd');
-  if (!Array.isArray(passthroughArgs)) throw new TypeError('passthroughArgs must be an array');
-  return `& ${quotePowerShell(runCmd)}${passthroughArgs.length ? ` ${passthroughArgs.map(quotePowerShell).join(' ')}` : ''}`;
-}
-
-function buildRunCommand(root, passthroughArgs = []) {
-  const installRoot = requireAbsoluteWindowsPath(root, 'Install root');
-  const script = buildRunScript(installRoot, passthroughArgs);
-  return {
-    command: 'powershell.exe',
-    args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
-    cwd: installRoot,
-    shell: false,
-  };
-}
-
-module.exports = {
-  quotePowerShell,
-  getAppPaths,
-  buildBootstrapScript,
-  buildBootstrapCommand,
-  buildRunScript,
-  buildRunCommand,
-};
+module.exports = { quotePowerShell, bootstrap, run };

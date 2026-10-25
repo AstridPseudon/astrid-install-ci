@@ -1,8 +1,3 @@
 'use strict';
-
-module.exports = {
-  run: [{
-    method: 'script.stop',
-    params: { uri: 'pinokio/start.js' },
-  }],
-};
+const app = require('./lib');
+module.exports = { run: [app.customStep(app.stopOwnedStart)] };

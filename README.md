@@ -1,36 +1,18 @@
 # Astrid for Pinokio
 
-Astrid is a community beta Pinokio app for macOS, Linux, and Windows. Pinokio owns the running process; Astrid's installer installs the back end inside the Pinokio app folder. The normal Astrid project and runtime data stays outside that folder.
+Astrid is a community beta for macOS, Linux and Windows. Pinokio owns the processes; Astrid's installer installs the back end.
 
-## Choose an install
+- **Install** installs the back end. Open the editor at [astrid.haus](https://astrid.haus/?connect=1).
+- **Install fully local** also checks out and builds the editor at `http://127.0.0.1:5180/tools/video-editor?connect=1`. The astrid.haus connection is off.
 
-- **Install** installs the back end only. Open the editor at [astrid.haus](https://astrid.haus); it connects to the local back end on port `17340`.
-- **Install fully local** installs the back end and checks out/builds the editor locally. Pinokio serves it at `http://127.0.0.1:5180/tools/video-editor`; the `astrid.haus` connection is turned off.
+Both choices use one Runtime. Program files live in `app/astrid`, the optional editor in `app/editor`, and the mode in `app/install-mode.json`. Projects and Runtime data stay in the data root recorded by the installer, outside these program files.
 
-Both choices install one back end. The local editor does not install a second Runtime.
+**Start** publishes Open only after readiness. **Stop** stops this launcher's process tree. **Update** and **Add local editor** stop it first; local builds use the editor checkout's bootstrap and manifest so both halves match. Start again after an update or mode change.
 
-## Data and program files
+**Reset** removes only `app/`, keeping data. **Uninstall** stops Astrid and runs its uninstaller, keeping data, then removes program files. The separate **Uninstall and permanently delete all data…** action requires typing `DELETE`.
 
-Pinokio program files live under the app's `app/` folder: the back end is in `app/astrid` and the optional editor checkout is in `app/editor`. The selected install mode is recorded in `app/install-mode.json`.
+In Pinokio's `ENVIRONMENT` file, leave `ASTRID_APP_REF` empty for production. For branch testing, set it to `feat/pinokio` (or another astrid-app branch). This selects the ref's raw GitHub bootstrap and manifest and the matching editor branch. Reset and reinstall to change an existing local editor's branch. `ASTRID_AUTOSTART=0` disables the default Start menu selection.
 
-The installer keeps Astrid data in the normal user data root, outside the Pinokio app folder. Defaults are:
+If port 17340 already answers as Astrid, the menu explains and offers Open. If another program holds it, the menu reports the conflict. A local Start also refuses an occupied port 5180 or an already healthy Runtime at the selected data root.
 
-- macOS: `~/Library/Application Support/Astrid Runtime`
-- Linux: `$XDG_DATA_HOME/astrid-runtime`, or `~/.local/share/astrid-runtime` when `XDG_DATA_HOME` is unset
-- Windows: `%LOCALAPPDATA%\Astrid Runtime`
-
-An installer option or an existing Astrid setup can select a different data root.
-
-## Start, Update, Reset, and Uninstall
-
-- **Start** runs the installed `<root>/run` entry in the foreground under Pinokio. The local choice also serves the editor on port `5180`.
-- **Update** updates the back end. For a fully local install, it first runs `git pull --ff-only` in the editor checkout, updates from that checkout's `public/install-manifest.json`, reinstalls the editor dependencies with pinned Node, and rebuilds the editor.
-- **Reset** uninstalls and removes Pinokio program files, then clears the selected mode. It keeps Astrid data.
-- **Uninstall** removes the back end and editor program files while keeping Astrid data.
-- **Uninstall and permanently delete all data…** is a separate action. It requires typing `DELETE` and passes the installer's `--delete-data` option.
-
-The bootstrap address can be changed in Pinokio's `ENVIRONMENT` file with `ASTRID_INSTALL_URL`. Its default is `https://astrid.haus/install`.
-
-## Beta notes
-
-This launcher is an initial beta scaffold. It should be tested in Pinokio before general use. The launcher-to-installer assumptions and the points to reconcile with the installer work are listed in [docs/INTERFACE.md](docs/INTERFACE.md).
+See [the command and installer interface](docs/INTERFACE.md) and [validation and remaining native checks](docs/VALIDATION.md).

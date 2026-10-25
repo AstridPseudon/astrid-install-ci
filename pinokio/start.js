@@ -1,25 +1,16 @@
 'use strict';
-
 const app = require('./lib');
-
 module.exports = async () => {
   const mode = app.readInstallMode();
-  if (!mode) throw new Error('Astrid install mode is missing. Reinstall Astrid from Pinokio.');
-  const { root, editor } = app.getPaths();
-  const steps = [
+  // Pinokio also resolves this module while stopping it. Defer validation to
+  // execution so Stop/Reset still work after a partial or damaged install.
+  if (!mode) return { run: [app.customStep(async () => {
+    throw new Error('Astrid install mode is missing. Reinstall Astrid from Pinokio.');
+  })] };
+  return { daemon: true, run: [
     app.customStep(app.ensureDoorPortFree),
-    app.backendLaunchStep(root, { hostedOriginOff: mode === 'local' }),
-    app.customStep(app.waitForDoor),
-  ];
-
-  if (mode === 'local') {
-    steps.push(
-      app.localEditorLaunchStep(root, editor),
-      app.customStep(app.waitForLocalEditor),
-    );
-  }
-
-  const target = app.localSetOpenTarget(mode);
-  steps.push({ method: 'local.set', params: { url: target.url, mode: target.mode } });
-  return { daemon: true, run: steps };
+    app.sessionStep('serve', mode),
+    // The supervisor emits its sentinel only after health/attach + HTTP readiness.
+    { method: 'local.set', params: app.localSetOpenTarget(mode) },
+  ] };
 };

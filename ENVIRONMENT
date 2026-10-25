@@ -1,7 +1,6 @@
-# Pinokio selects and starts start.js by default after Astrid is installed.
-# Set ASTRID_AUTOSTART=0 to disable that default Start selection.
-ASTRID_AUTOSTART=1
+# Empty selects production. A branch or tag (for example feat/pinokio) selects
+# that astrid-app ref's bootstrap + manifest and local editor checkout.
+ASTRID_APP_REF=
 
-# Bootstrap URL is shared by macOS/Linux and Windows; point it at a local test
-# bootstrap when testing before https://astrid.haus/install has the new flags.
-ASTRID_INSTALL_URL=https://astrid.haus/install
+# Pinokio selects Start by default once installed; set 0 to disable.
+ASTRID_AUTOSTART=1

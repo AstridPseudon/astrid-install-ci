@@ -1,52 +1,123 @@
-# Installer and Pinokio interface assumptions
+# Launcher and installer interface
 
-This launcher is N3 scaffolding. These are the interface assumptions used by its scripts; reconcile them with the installer and runtime changes before release.
+These are the implemented commands. `A` is the absolute Pinokio app directory, `R=A/app/astrid`, `E=A/app/editor`, and `M=E/public/install-manifest.json`. Paths are quoted by the platform builder; Windows uses backslashes. Literal shell commands for all scripts, platforms and both production/ref sources are checked in [tests/commands.json](../tests/commands.json). That fixture includes spaces and an apostrophe in the app path.
 
-## Bootstrap and installed commands
+## Sources and bootstrap
 
-- `ASTRID_INSTALL_URL` is the one bootstrap URL setting used on every platform. `ENVIRONMENT` defaults it to `https://astrid.haus/install`.
-- POSIX install command: `curl -fsSL <url> | sh -s -- --root <absolute-root> --managed-by pinokio`.
-- Windows install command: `& ([scriptblock]::Create((irm <url>))) --root <absolute-root> --managed-by pinokio`.
-- Update and uninstall use the same root and manager arguments, with `--update` or `--uninstall` respectively.
-- A local manifest is passed as `--manifest <absolute-file>` alongside the root and manager arguments. Fully local install/add/update use the editor checkout's `public/install-manifest.json`.
-- `ENVIRONMENT` has one `ASTRID_INSTALL_URL` setting. Its default base is `https://astrid.haus/install`; Windows derives `https://astrid.haus/install.ps1`. A non-default override is used verbatim on both platforms, so tests can point it at their local bootstrap URL.
-- The installer writes `<root>/run` on POSIX and `<root>\run.cmd` on Windows. It also writes `<root>/start` or `<root>\start.cmd`; the editor build receives that path in `ASTRID_START_COMMAND`.
-- `--uninstall` keeps user data. The separate, typed-confirmation action adds `--delete-data` to `--uninstall`.
-- `--managed-by pinokio` installs without registering a login service. Every launcher-owned backend start passes `ASTRID_INSTALL_MANAGED_BY=pinokio` to the run entry.
+`ENVIRONMENT` has one source-selection hook: `ASTRID_APP_REF`, empty by default.
 
-## Program layout and mode record
+| Source | macOS / Linux bootstrap | Windows bootstrap | Manifest | Editor clone |
+| --- | --- | --- | --- | --- |
+| Empty ref | `https://astrid.haus/install` | `https://astrid.haus/install.ps1` | Bootstrap's production default | `banodoco/astrid-app`, branch `main` |
+| Ref `feat/pinokio` | `https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install` | Same directory, `install.ps1` | Same directory, `install-manifest.json`, downloaded and passed with `--manifest` | Same repository, branch `feat/pinokio` |
+| Fully local install/add/update | `sh E/public/install` | `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File E/public/install.ps1` | Always `--manifest M` | Existing validated checkout |
 
-The Pinokio app folder is derived from the location of `pinokio.js`. Program files are stored at:
+Remote bootstrap commands download the script into a temporary directory before executing it. Ref commands download the manifest there too. POSIX uses `curl -fsSL URL -o FILE` and `sh FILE`; Windows uses TLS 1.2, `Invoke-WebRequest -UseBasicParsing URL -OutFile FILE`, and `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath FILE)))`. The surrounding POSIX EXIT trap / PowerShell finally removes the temporary directory.
 
-- `<Pinokio app>/app/astrid` — installed back end
-- `<Pinokio app>/app/editor` — optional `banodoco/astrid-app` checkout
-- `<Pinokio app>/app/install-mode.json` — the small `backend` or `local` install record
+Every installer invocation passes `--root R --managed-by pinokio`. Update adds `--update`. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
 
-Reset and uninstall remove only `<Pinokio app>/app` after asking the installer to uninstall the back end. They do not choose a data root or remove it. The permanent-delete action relies on the installer's default/existing data-root selection.
+The current POSIX bootstrap honors a supplied manifest before preparing tool/source pins, so it can run from raw GitHub without an astrid.haus manifest request. It uses absolute public uv/GitHub download URLs, not a URL relative to its own script. The source smoke runs its actual bytes with fake curl, uv and package operations. Windows has the equivalent manifest-selection logic; its native execution remains unqualified here.
 
-## Fully local editor build
+The POSIX bootstrap creates a disposable `bootstrap-venv` beside its supplied manifest. For checkout bootstraps the launcher removes `E/public/bootstrap-venv` in an EXIT trap, on success or failure, so Vite cannot copy it into `dist`. Windows bootstrap creates its venv in its own temporary directory. The bootstrap itself was not changed.
 
-`dev-local-workspace.mjs --build` validates a running Runtime before building. Install fully local, Add local editor, and fully local Update therefore start `<root>/run` temporarily through Pinokio, wait for Runtime health, run the editor build, and let Pinokio clean up that temporary process when the non-daemon script finishes.
+## Commands per action
 
-The build command runs the Node pinned in the installed version record. This scaffold assumes the installer stores `current` as the installed version ID, the version record at `<root>/versions/<id>/version.json`, and `env.ASTRID_NODE_EXECUTABLE` as the pinned Node path. POSIX scripts use the installed Python at `<version>/py/bin/python` to read that record; Windows uses PowerShell JSON parsing. The launcher invokes the Node distribution's bundled `npx-cli.js` as `node npx-cli.js -y npm@11 ci` (the same `npx -y npm@11 ci` operation without relying on an unpacked `npx` symlink), followed by `node scripts/dev-local-workspace.mjs --build`.
+The shell is Bash on macOS/Linux and PowerShell on Windows. `B(action)` below means the remote bootstrap selected above; `L(action)` means the checkout's own bootstrap plus `--manifest M`.
 
-The local install and start paths pass `--hosted-origin off` to the backend and set `ASTRID_APP_LOOPBACK_ORIGIN=off` for the local editor. The preview command is `node scripts/dev-local-workspace.mjs --preview --preview-dir <absolute-editor-dist>` and is expected to listen only on `127.0.0.1:5180`.
+| Script | Back-end-only mode | Fully local mode |
+| --- | --- | --- |
+| `install.js` | Port preflight; create `A/app`; `B(install)`; save `backend` | — |
+| `install-local.js` | — | Port preflight; create `A/app`; clone or validate/pull editor; `L(install)`; temporary build session; save `local` |
+| `add-local.js` | Await Stop; port preflight; clone or validate/pull editor; `L(update)`; temporary build session; save `local` | Refuses |
+| `update.js` | Await Stop; port preflight; `B(update)` | Await Stop; port preflight; validate/pull editor; `L(update)`; temporary build session |
+| `start.js` | Port preflight; foreground hosted session; publish hosted URL after readiness | Port preflight; foreground local session; publish local URL after readiness |
+| `stop.js` | Await `kernel.api.stop({params:{uri: A/pinokio/start.js}})` | Same; the session owns the editor too |
+| `reset.js` | Await Stop; recursively remove only `A/app` | Same; no bootstrap/uninstaller |
+| `uninstall.js` | Await Stop; port preflight; `B(uninstall)`; remove `A/app` | Same |
+| `uninstall-delete-data.js` | Require exact `DELETE`; await Stop; port preflight; `B(uninstall --delete-data)`; remove `A/app` | Same |
 
-## Readiness and menu state
+The editor commands on POSIX are:
 
-- Runtime readiness is checked at `http://127.0.0.1:17340/api/runtime/v1/health`; success is HTTP 200 with JSON `status: "ok"` and `protocol: "workspace.v1"`.
-- The local editor readiness probe uses `http://127.0.0.1:5180/tools/video-editor`.
-- Start uses Pinokio `shell.run` with a startup sentinel and `done: true`, then waits on the health URL. Pinokio keeps the shell with the start script. Stop calls `script.stop` for `pinokio/start.js`.
-- The dynamic menu uses `info.exists`, `info.running`, and `info.local`. If port `17340` already answers as Astrid, it offers Open only. If another program answers there, it displays a port conflict and hides Start until that program stops.
-- Open for back-end-only installs is `https://astrid.haus/?connect=1` with `popout: true`. Open for fully local installs is `http://127.0.0.1:5180/tools/video-editor?connect=1`.
-- `ASTRID_AUTOSTART=1` makes Start the default menu item after installation; set it to `0` to disable that default.
+```sh
+git clone --branch '<ref-or-main>' --single-branch -- 'https://github.com/banodoco/astrid-app' 'E'
+git -C 'E' pull --ff-only
+```
 
-Pinokio's manual does not mandate icon dimensions or a raster format. The launcher includes a PNG, as used by the inspected launchers; `icon.png` is 256×256, scaled from the 16×16 source SVG with nearest-neighbour resampling.
+Windows uses the same Git arguments with PowerShell single-quote escaping, and checks `$LASTEXITCODE`. Before pulling, both platforms require the checkout's current branch to equal `ASTRID_APP_REF` or `main` when empty. An existing editor must have a `.git` entry and the expected HTTPS origin. A missing or different checkout fails rather than being silently replaced. Use a branch ref for the local update flow; detached tag/SHA updates are not supported.
 
-## Open points for reconciliation
+Every shell step converts failure into `ASTRID_PINOKIO_FAILURE`, with a Pinokio `break: true` event. POSIX runs the command under a nested `bash --noprofile --norc -c` with `set -eu`; PowerShell uses `try/catch` and explicit native exit-code checks. This matters because the inspected Pinokio shell can resolve at its prompt after a failing command. The marker is split in the submitted shell source so terminal echo cannot trigger it. See the full wrapper bytes in the fixture.
 
-- Confirm the new installer accepts the bootstrap flags and keeps the `run`, `run.cmd`, `start`, and `start.cmd` paths described above.
-- Confirm the installed version pointer/record and pinned Node field remain stable, or update the local editor command builder to the X1 layout.
-- Confirm that a Pinokio-managed `run` with `--hosted-origin off` still exposes the local Runtime health endpoint on port `17340`.
-- Confirm the local editor build succeeds with the temporary Pinokio-owned Runtime and that finishing the install/update script stops that temporary process on all three operating systems.
-- Confirm the hosted bootstrap serves a manifest-compatible installer before setting `ASTRID_INSTALL_URL` back to the public URL in the beta listing.
+## Pinned tools and sessions
+
+The launcher reads `R/current`, validates the version identifier, then reads `R/versions/<id>/version.json`. It uses `env.ASTRID_NODE_EXECUTABLE` as the authoritative Node. It validates that Node is inside that version. The installer handoff pins Node 20.19.4; the launcher does not substitute ambient Node or download a second npm version.
+
+Each session starts using:
+
+```text
+<PINNED_NODE> A/pinokio/session.mjs build R E local
+<PINNED_NODE> A/pinokio/session.mjs serve R E backend
+<PINNED_NODE> A/pinokio/session.mjs serve R E local
+```
+
+Shell commands resolve the pointer at execution time, after install/update. POSIX uses `V/py/bin/python -I -c <read-version-json>` to locate Node, then `exec`s Node. Windows uses `Get-Content | ConvertFrom-Json`, validates the Node path, and invokes `& $node ...`. The exact resolution commands are in the fixture.
+
+`session.mjs` also reads `R/install.json` and requires `owner=haus.astrid.runtime`, `managed_by=pinokio`, and an absolute recorded data root. Its child invocations are:
+
+| Operation | macOS / Linux | Windows |
+| --- | --- | --- |
+| Hosted Runtime | `R/run` | `cmd.exe /d /s /c ""R\run.cmd""` |
+| Local Runtime, including temporary build | `R/run --hosted-origin off` | `cmd.exe /d /s /c ""R\run.cmd" --hosted-origin off"` |
+| Runtime readiness/status | `<record.python> -I -m astrid_runtime status --data-root <recorded-data-root> --json` | Same argument array |
+| Editor dependencies | `<Node> <npm-cli.js> ci --no-audit --no-fund` | Same argument array |
+| Editor build | `<Node> scripts/dev-local-workspace.mjs --build` | Same argument array |
+| Editor serve | `<Node> scripts/dev-local-workspace.mjs --preview --preview-dir E/dist` | Same argument array |
+
+Windows batch invocation uses `windowsVerbatimArguments: true`. Install paths containing `%`, double quotes or newlines are refused to avoid cmd expansion/quoting errors. Spaces, apostrophes, ampersands and `!` are supported by the command construction and still require native qualification.
+
+`npm-cli.js` is located from the authoritative Node:
+
+- POSIX: `dirname(Node)/../lib/node_modules/npm/bin/npm-cli.js`.
+- Windows: `dirname(Node)/node_modules/npm/bin/npm-cli.js`.
+
+Node's directory is added to PATH for package scripts. `npm_execpath` and `npm_node_execpath` identify these pinned tools, including the editor wrapper's own npm/npx invocations. No unpacked POSIX npm/npx symlink is required.
+
+The editor gets the installed version's environment plus explicit `ASTRID_RUNTIME_PYTHON=<record.python>`, `ASTRID_RUNTIME_SOURCE_MANIFEST=<record.profile>`, `ASTRID_RUNTIME_DATA_ROOT=<install.data_root>`, `ASTRID_SUPPORT_ROOT` and `ASTRID_WORKSPACE_DISCOVERY=<data>/runtime/discovery.json`. Ambient checkout selection, Python imports, Node options, endpoint and credential overrides are cleared. `PORT=5180`, `VITE_ASTRID_DYNAMIC_PROXY_PORT=17336`, `ASTRID_RUNTIME_DOOR_PORT=17340` and `ASTRID_INSTALL_MANAGED_BY=pinokio` are fixed.
+
+Local sessions additionally set `ASTRID_APP_LOOPBACK_ORIGIN=off`. Hosted sessions clear that variable. `ASTRID_START_COMMAND` names the actual `R/run` or `R/run.cmd`, for diagnostics only. The installer does not provide `start` or `with-env`. An upstream editor error hint still derives nonexistent `with-env` from this variable; actual attach/start resolution uses the explicit Python/profile/data environment, not that hint.
+
+The editor's `--build` requires a live Runtime and does not run `up`. A build session installs npm dependencies, starts one foreground Runtime with its door off, waits for Runtime status, builds, then stops that Runtime in `finally`. npm/build failures and interruption also enter cleanup. It never publishes an Open URL or switches mode on a failed shell step.
+
+Normal local Start runs the foreground Runtime first, waits for status, then starts preview. `dev-local-workspace` validates discovery/credentials/schema/realm and attaches before starting its proxy/Vite server. `ASTRID_START_COMMAND` is not a mechanism for starting or attaching to Runtime. The editor can call `astrid-runtime up` itself if it loses discovery; the supervisor watches its owned Runtime and tears down the editor if that process exits. That custody race is a native qualification item.
+
+## Readiness and menu
+
+Before Start, TCP port 17340 is probed. A `workspace.v1` health response, the Astrid-specific unavailable/identity-mismatch response, or the hosted-origin-required response identifies Astrid. Other responses or a non-HTTP listener identify another program. This preflight runs again when Start executes, not only when the menu renders.
+
+The session refuses an already healthy Runtime at its recorded data root. A local serve session also refuses any existing listener on 5180. Readiness then requires:
+
+- Both modes: installed `astrid_runtime status` exits zero, `support.healthy=true`, no stale discovery, and `health.status=ok`.
+- Hosted: HTTP 200 at `http://127.0.0.1:17340/api/runtime/v1/health`, with Origin `https://astrid.haus`, `status=ok` and `protocol=workspace.v1`.
+- Local: HTTP success at `http://127.0.0.1:5180/tools/video-editor`, plus a successful `/runtime-config/v1/workspace.json` with `schemaVersion=1` and the same realm and Runtime instance as status discovery. This works with the door off and rejects an unrelated HTTP server.
+
+After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done: true` listener retains that shell in the daemon script; only the next `local.set` stores `{url, mode}`. Request timeouts bound individual probes; production startup has a 180-second readiness deadline. The subprocess smoke supplies an unlimited startup deadline and uses no test timeouts.
+
+| State | Menu |
+| --- | --- |
+| No installed mode/run entry, port free | Install; Install fully local |
+| Installed backend, stopped | Start; Update; Add local editor; Reset; Uninstall; Uninstall and permanently delete all data… |
+| Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and permanently delete all data… |
+| Start running, no published URL | Starting Astrid…; Stop |
+| Ready owned Start | Open Astrid; Stop |
+| Install/add/update/reset/uninstall/delete/stop active | Operation status only |
+| External Astrid on 17340 | Explanation; Open Astrid only (hosted URL) |
+| Other program on 17340 | Conflict message only |
+
+Start is the default stopped menu item unless `ASTRID_AUTOSTART=0`. Hosted Open is `https://astrid.haus/?connect=1`, `popout: true`. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. The owned running menu reads the published URL and does not synthesize Open while startup is pending.
+
+## Stop and cleanup
+
+Stop, Update, Add local editor, Reset and both uninstall actions await the absolute Start script's `kernel.api.stop`. The inspected Pinokio `script.stop` wrapper does not await that call, so the launcher uses the awaited API directly.
+
+Pinokiod source inspected: `add4a67`. `kernel/api/index.js` stops all shells in the script group; `kernel/shell.js` calls `kill-sync(ptyPid, 'SIGKILL', true)` then closes the PTY. `server/index.js:shutdown` calls `kernel.shell.reset()` before recursively killing itself. Consequently Pinokio Stop/quit is a forced tree termination, not a catchable SIGTERM. The launcher does not start a login service, use `nohup`, `unref`, or intentionally reparent the foreground Runtime/editor. App-owned detached process groups remain descendants while their launcher lives.
+
+The supervisor handles SIGINT, SIGTERM, SIGHUP and Windows SIGBREAK for direct interruption. It cleans children in reverse launch order, editor/build before Runtime. POSIX children have owned process groups: TERM, five-second escalation to KILL, and a final group sweep even after the group leader exits. macOS EPERM is ignored only when a process snapshot shows no live members of that group. Windows uses `taskkill.exe /PID <owned-child> /T /F` while the child is alive. SIGKILL cannot execute JavaScript/Python cleanup handlers; forced Stop/quit relies on Pinokio's recursive tree termination. Real PTY/ConPTY containment remains in the native checklist.
