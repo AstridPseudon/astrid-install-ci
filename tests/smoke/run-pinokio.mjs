@@ -74,6 +74,20 @@ function makeFfmpegGuard(binDirectory) {
   }
 }
 
+function quoteBash(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function makeNodeLauncher(binDirectory) {
+  if (windows) {
+    const script = `@echo off\r\n"${process.execPath}" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+    fs.writeFileSync(path.join(binDirectory, 'node.cmd'), script);
+  } else {
+    const script = `#!/bin/sh\nexec ${quoteBash(process.execPath)} "$@"\n`;
+    fs.writeFileSync(path.join(binDirectory, 'node'), script, { mode: 0o700 });
+  }
+}
+
 function prepareCheckout(source, appDirectory) {
   const branch = 'ci-smoke';
   execFileSync('git', ['-C', source, 'checkout', '-B', branch, 'HEAD'], { stdio: 'inherit' });
@@ -98,7 +112,11 @@ function launchShell(step, environment, { background = false, onSpawn } = {}) {
   assert.equal(step.params.shell, shell);
   assert.equal(path.resolve(step.params.path), path.resolve(environment.ASTRID_PINOKIO_APP_DIR),
     'Pinokio shell steps must run from the app checkout');
-  const child = spawn(shell, windows
+  const executable = windows
+    ? path.win32.join(environment.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : shell;
+  assert.ok(fs.existsSync(executable), `${shell} is missing from this runner: ${executable}`);
+  const child = spawn(executable, windows
     ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', step.params.message]
     : ['--noprofile', '--norc', '-c', step.params.message], {
     cwd: step.params.path,
@@ -406,6 +424,7 @@ async function setup() {
   fs.mkdirSync(apiDirectory, { recursive: true });
   fs.mkdirSync(cacheDirectory, { recursive: true });
   fs.mkdirSync(binDirectory, { recursive: true });
+  makeNodeLauncher(binDirectory);
   makeFfmpegGuard(binDirectory);
   prepareCheckout(repository, appDirectory);
 
