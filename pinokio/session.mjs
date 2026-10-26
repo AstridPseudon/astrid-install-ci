@@ -32,7 +32,7 @@ export function installation(root, { platform = process.platform, filesystem = f
   }
   const env = { ...environment, ...record.env };
   // No ambient developer checkout or discovery may redirect the editor.
-  for (const key of ['PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE', 'NODE_OPTIONS', 'ASTRID_WORKSPACE_ENDPOINT', 'ASTRID_WORKSPACE_CREDENTIAL',
+  for (const key of ['PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE', 'GIT_CONFIG_GLOBAL', 'NODE_OPTIONS', 'ASTRID_WORKSPACE_ENDPOINT', 'ASTRID_WORKSPACE_CREDENTIAL',
     'ASTRID_RUNTIME_CHECKOUT', 'ASTRID_CHECKOUT', 'ASTRID_PUBLIC_CHECKOUT', 'ASTRID_APP_HOSTED_ORIGIN_CONFIG',
     'ASTRID_APP_PAIRED_RELAY_ORIGIN']) delete env[key];
   Object.assign(env, {
