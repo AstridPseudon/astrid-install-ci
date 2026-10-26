@@ -114,7 +114,7 @@ function launchShell(step, environment, { background = false, onSpawn } = {}) {
     'Pinokio shell steps must run from the app checkout');
   const executable = windows
     ? path.win32.join(environment.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    : shell;
+    : '/bin/bash';
   assert.ok(fs.existsSync(executable), `${shell} is missing from this runner: ${executable}`);
   const child = spawn(executable, windows
     ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', step.params.message]
