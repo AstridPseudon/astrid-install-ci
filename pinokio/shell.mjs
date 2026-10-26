@@ -1,6 +1,7 @@
 // Pinokio's shell.run env can add variables but cannot remove inherited ones.
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import policy from './environment.js';
 
@@ -20,7 +21,7 @@ export function runShell({ appDirectory, message, explicit = {}, platform = proc
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   const [argument, message, explicit] = process.argv.slice(2);
   try {
     const prefix = '--pinokio-payload=';
