@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import library from '../../pinokio/lib.js';
+import { signalGroup } from '../../pinokio/session.mjs';
 import { runTool as executeTool, timedStep } from './process.mjs';
 
 const require = createRequire(import.meta.url);
@@ -106,8 +107,7 @@ function processTreeKill(child) {
       stdio: 'ignore', windowsHide: true,
     });
   } else {
-    try { process.kill(-child.pid, 'SIGKILL'); }
-    catch (error) { if (error.code !== 'ESRCH') throw error; }
+    signalGroup(child.pid, 'SIGKILL');
   }
 }
 
