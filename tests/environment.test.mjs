@@ -81,6 +81,18 @@ function checkEnvironment(env, f, installed = false) {
   assert.equal(env.NO_PROXY, 'localhost');
   assert.ok(env.PATH);
   assert.equal(env.ASTRID_INSTALL_MANAGED_BY, 'pinokio');
+  const fixtureEnvironment = pinokioEnv(f.home, f.platform);
+  const inheritedFixtureKeys = new Set(['HOME', 'USERPROFILE', 'PATH', 'LOCALAPPDATA', 'APPDATA', 'SystemRoot', 'ComSpec', 'PATHEXT']);
+  const valueFor = (key) => f.win
+    ? Object.entries(env).find(([name]) => name.toUpperCase() === key.toUpperCase())?.[1]
+    : env[key];
+  for (const [key, value] of Object.entries(fixtureEnvironment)) {
+    if (inheritedFixtureKeys.has(key)) continue;
+    const actual = valueFor(key);
+    if ((f.win && ['TEMP', 'TMP'].includes(key)) || (f.platform === 'darwin' && key === 'TMPDIR')) {
+      assert.notEqual(actual, value, key);
+    } else assert.equal(actual, undefined, key);
+  }
   const normalize = (value) => f.win ? value.replace(/\\/g, '/').toLowerCase() : value;
   const home = normalize(f.home);
   for (const [key, value] of Object.entries(env)) {
@@ -188,6 +200,31 @@ test('environment verifies layout, path boundaries, Windows casing, temp failure
     else assert.ok(env.PATH.includes(outside));
     assert.equal(policy.buildEnvironment({ ...f, recordEnv: { ASTRID_FFMPEG_EXECUTABLE: f.p.join(f.home, 'bin', 'ffmpeg') } }).ASTRID_FFMPEG_EXECUTABLE, undefined);
   }
+});
+
+test('environment preserves login-service variables while removing Pinokio fixture values', () => {
+  const win = fixture('win32', 'backend');
+  const windowsVariables = {
+    processor_architecture: 'AMD64', processor_architew6432: 'AMD64', windir: 'C:\\Windows',
+    SystemDrive: 'C:', ProgramFiles: 'C:\\Program Files', 'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    ProgramW6432: 'C:\\Program Files', ProgramData: 'C:\\ProgramData', ALLUSERSPROFILE: 'C:\\ProgramData',
+    CommonProgramFiles: 'C:\\Program Files\\Common Files', 'CommonProgramFiles(x86)': 'C:\\Program Files (x86)\\Common Files',
+    CommonProgramW6432: 'C:\\Program Files\\Common Files', PUBLIC: 'C:\\Users\\Public',
+    pSmOdUlEpAtH: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
+    NUMBER_OF_PROCESSORS: '8', PROCESSOR_IDENTIFIER: 'Intel64 Family 6 Model 142 Stepping 10, GenuineIntel',
+    PROCESSOR_LEVEL: '6', PROCESSOR_REVISION: '8e0a', OS: 'Windows_NT', COMPUTERNAME: 'TEST-PC',
+    USERDOMAIN: 'TEST-PC', USERDOMAIN_ROAMINGPROFILE: 'TEST-PC', LOGONSERVER: '\\\\TEST-PC',
+  };
+  const windowsEnv = policy.buildEnvironment({ ...win, recordEnv: {}, environment: { ...win.environment, ...windowsVariables } });
+  for (const [key, value] of Object.entries(windowsVariables)) {
+    assert.equal(Object.entries(windowsEnv).find(([name]) => name.toUpperCase() === key.toUpperCase())?.[1], value, key);
+  }
+
+  const linux = fixture('linux', 'backend');
+  const sessionVariables = { XDG_RUNTIME_DIR: '/run/user/1000', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+    DISPLAY: ':0', WAYLAND_DISPLAY: 'wayland-0' };
+  const linuxEnv = policy.buildEnvironment({ ...linux, recordEnv: {}, environment: { ...linux.environment, ...sessionVariables } });
+  for (const [key, value] of Object.entries(sessionVariables)) assert.equal(linuxEnv[key], value, key);
 });
 
 test('native shell wrapper strips a Pinokio environment at the real child boundary and preserves exit status', async () => {

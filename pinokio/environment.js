@@ -4,11 +4,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-// astrid/core/subprocess_env.py:57-85, plus standard proxy settings.
+// Base variables for parity with the login-service environment.
 const BASE = ['HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LOGNAME', 'PATH', 'PWD', 'SHELL',
   'TMPDIR', 'USER', 'USERNAME', 'VIRTUAL_ENV', 'PYENV_VERSION'];
 const WINDOWS = ['USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
-  'SYSTEMROOT', 'TEMP', 'TMP', 'PATHEXT', 'COMSPEC'];
+  'SYSTEMROOT', 'TEMP', 'TMP', 'PATHEXT', 'COMSPEC', 'PROCESSOR_ARCHITECTURE',
+  'PROCESSOR_ARCHITEW6432', 'WINDIR', 'SYSTEMDRIVE', 'PROGRAMFILES', 'PROGRAMFILES(X86)',
+  'PROGRAMW6432', 'PROGRAMDATA', 'ALLUSERSPROFILE', 'COMMONPROGRAMFILES',
+  'COMMONPROGRAMFILES(X86)', 'COMMONPROGRAMW6432', 'PUBLIC', 'PSMODULEPATH',
+  'NUMBER_OF_PROCESSORS', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION',
+  'OS', 'COMPUTERNAME', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'LOGONSERVER'];
+const LINUX = ['XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY'];
 const PROXIES = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY',
   'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy'];
 
@@ -63,7 +69,7 @@ function buildEnvironment({ appDirectory, platform = process.platform, environme
     return entry && (!inHome(resolved) || (deliberate && deliberatePath(resolved)));
   }).join(win ? ';' : ':');
   const env = {};
-  const allowed = new Set([...BASE, ...(win ? WINDOWS : [])]);
+  const allowed = new Set([...BASE, ...(win ? WINDOWS : platform === 'linux' ? LINUX : [])]);
   for (const [key, value] of Object.entries(environment)) {
     const name = win ? key.toUpperCase() : key;
     if (!allowed.has(name) && !PROXIES.includes(key)) continue;
