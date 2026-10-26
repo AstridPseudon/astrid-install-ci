@@ -1,5 +1,13 @@
 # Task L validation and handoff
 
+## GitHub CI
+
+- **Unit** runs the launcher tests on Ubuntu, macOS and Windows with Node 20.19.4. The spec reporter prints skipped tests with their names and reasons.
+- **Pinokio smoke** runs the real install, Start, health, one-second render, Stop, Update, restart and Uninstall flow on all three systems inside a temporary Pinokio home. It checks the downloaded FFmpeg pin, cache/data paths, service registration and port cleanup.
+- **Fully local** installs and builds the local editor on Ubuntu, starts it on port 5180, checks the Runtime health proxy, and confirms the hosted origin is refused.
+
+CI runs for pushes to `feat/pinokio` and `main`, pull requests, manual dispatches, and nightly upstream-drift checks.
+
 All launcher changes are in `/Users/hannahomalley/Developer/astrid-pinokio`, branch `main`, as explicitly requested. No remote is configured. No push or PR was made. No package installation, login service, real Runtime or editor server was run. The actual POSIX bootstrap was executed only against fakes. Tests did not probe the live door, use the live data root, or touch production/live-door/app-door. Temporary fixtures were removed.
 
 ## Commands run
