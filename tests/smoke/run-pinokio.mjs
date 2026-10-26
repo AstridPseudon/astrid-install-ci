@@ -381,6 +381,13 @@ async function setup() {
 
   const environment = makeEnvironment(pinokioHome, process.platform);
   assert.ok(environment && typeof environment === 'object', 'Pinokio env fixture must return an environment object');
+  if (windows) {
+    for (const key of ['PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432']) {
+      if (process.env[key]) environment[key] = process.env[key];
+    }
+    assert.ok(environment.PROCESSOR_ARCHITECTURE || environment.PROCESSOR_ARCHITEW6432,
+      'Windows smoke must preserve a CPU architecture for Python platform detection');
+  }
   // The fixture uses a stable sentinel home; remap it to a per-run directory so
   // the real installer and CLI never write outside this disposable CI tree.
   environment.HOME = userHome;
