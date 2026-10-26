@@ -157,18 +157,19 @@ test('Update pulls the launcher after the stop and lock check and fails before A
 });
 
 test('settings use ENVIRONMENT first and fall back to the shipped _ENVIRONMENT template', () => {
-  const base = '/Pinokio Apps/Astrid';
+  const p = process.platform === 'win32' ? path.win32 : path.posix;
+  const base = p.join(p.parse(process.platform === 'win32' ? 'C:\\' : '/').root, 'Pinokio Apps', 'Astrid');
   const values = new Map([
-    [`${base}/_ENVIRONMENT`, 'ASTRID_APP_REF=feat/pinokio\nOTHER=default'],
+    [p.join(base, '_ENVIRONMENT'), 'ASTRID_APP_REF=feat/pinokio\nOTHER=default'],
   ]);
   const app = library.createApp({ appDirectory: base, environment: {}, filesystem: {
     readFileSync(file) { if (!values.has(file)) throw new Error('absent'); return values.get(file); },
   } });
   assert.equal(app.setting('ASTRID_APP_REF'), 'feat/pinokio');
-  values.set(`${base}/ENVIRONMENT`, 'ASTRID_APP_REF=\nOTHER=generated');
+  values.set(p.join(base, 'ENVIRONMENT'), 'ASTRID_APP_REF=\nOTHER=generated');
   assert.equal(app.setting('ASTRID_APP_REF'), '');
   assert.equal(app.setting('OTHER'), 'generated');
-  values.set(`${base}/ENVIRONMENT`, 'OTHER=generated');
+  values.set(p.join(base, 'ENVIRONMENT'), 'OTHER=generated');
   assert.equal(app.setting('ASTRID_APP_REF'), 'feat/pinokio');
 });
 

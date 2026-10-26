@@ -235,13 +235,15 @@ test('native shell wrapper strips a Pinokio environment at the real child bounda
     const userHome = path.join(temp, 'user');
     fs.mkdirSync(appDirectory, { recursive: true }); fs.mkdirSync(userHome);
     const file = path.join(temp, 'environment.json');
+    const childScript = path.join(temp, 'environment-child.cjs');
     const environment = { ...pinokioEnv(home, process.platform), HOME: userHome,
       ...(process.platform === 'win32' ? { USERPROFILE: userHome, LOCALAPPDATA: path.join(userHome, 'AppData', 'Local'), APPDATA: path.join(userHome, 'AppData', 'Roaming') } : {}), ASTRID_RUNTIME_DOOR_PORT: '17341' };
     if (process.platform === 'win32') fs.mkdirSync(path.join(environment.LOCALAPPDATA, 'Temp'), { recursive: true });
     const app = library.createApp({ appDirectory });
     const q = process.platform === 'win32' ? (value) => `'${value.replace(/'/g, "''")}'` : (value) => `'${value.replace(/'/g, "'\\''")}'`;
     const code = `require('node:fs').writeFileSync(${JSON.stringify(file)},JSON.stringify(process.env));process.exit(7)`;
-    const command = `${process.platform === 'win32' ? '& ' : ''}${q(process.execPath)} -e ${q(code)}`;
+    fs.writeFileSync(childScript, code);
+    const command = `${process.platform === 'win32' ? '& ' : ''}${q(process.execPath)} ${q(childScript)}`;
     const message = process.platform === 'win32' ? command : `sh -c ${q(command)}`;
     assert.equal(await runShell({ appDirectory, environment, message, explicit: { ASTRID_RUNTIME_DOOR_PORT: '17341' } }), 7);
     const env = JSON.parse(fs.readFileSync(file));
