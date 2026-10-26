@@ -99,12 +99,18 @@ function prepareCheckout(source, appDirectory) {
   execFileSync('git', ['clone', '--branch', branch, '--single-branch', source, appDirectory], { stdio: 'inherit' });
 }
 
-function processTreeKill(child) {
+async function processTreeKill(child) {
   if (!child?.pid || child.closed) return;
   if (windows) {
     const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
-    execFileSync(path.win32.join(systemRoot, 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], {
+    const killer = spawn(path.win32.join(systemRoot, 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], {
       stdio: 'ignore', windowsHide: true,
+    });
+    await new Promise((resolve, reject) => {
+      killer.once('error', reject);
+      killer.once('close', (code) => code === 0 || child.closed
+        ? resolve()
+        : reject(new Error(`Could not stop process tree ${child.pid}.`)));
     });
   } else {
     signalGroup(child.pid, 'SIGKILL');
@@ -353,7 +359,7 @@ async function invokeAction(name, app, appDirectory, environment, home, getDaemo
 async function stopDaemon(getDaemon) {
   const child = getDaemon();
   if (!child) return;
-  processTreeKill(child);
+  await processTreeKill(child);
   await child.exit;
   getDaemon.set(null);
 }
