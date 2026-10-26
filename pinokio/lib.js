@@ -188,6 +188,10 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     ondata?.({ raw: 'Astrid stopped.\r\n' });
     return { stopped: active, lockFree: true };
   }
+  async function preflightBackup() {
+    const { preflightBackup: run } = await import('./backup-preflight.mjs');
+    return run(BACKEND_ROOT, { platform, filesystem, environment });
+  }
   async function ensureDoorPortFree(_req, ondata) {
     const result = await probe();
     if (result.kind === 'free') return { free: true };
@@ -201,7 +205,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     getPaths: () => ({ root: BACKEND_ROOT, editor: EDITOR_DIR }), setting, appRef, bootstrapScript,
     shellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
-    stopHook, stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
+    stopHook, stopOwnedStart, preflightBackup, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),
     ...CONSTANTS };
 }
