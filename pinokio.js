@@ -25,9 +25,12 @@ module.exports = {
         ? openItem({ href: local.url, popout: false })
         : openItem({ href: '/', target_full: local.url, popout: true });
       open.default = true;
-      return [open, item('Stop', 'stop', 'stop')];
+      return [open, ...(mode === 'backend' ? [item('Update and restart', 'update', 'rotate')] : []), item('Stop', 'stop', 'stop')];
     }
     const port = await app.probeDoor();
+    if (port.kind === 'astrid' && installed && app.hasOwnedSupervisor()) {
+      return [openItem(app.modeOpenTarget(mode)), ...(mode === 'backend' ? [item('Update and restart', 'update', 'rotate')] : []), item('Stop', 'stop', 'stop')];
+    }
     if (port.kind === 'astrid') return [infoItem('Astrid is already running on this computer. Use Open Astrid, or stop that copy to run Astrid from Pinokio.'), openItem(app.modeOpenTarget('backend'))];
     if (port.kind === 'occupied') return [infoItem("Another program is using port 17340, so Astrid can't start. Close it, then try again.")];
     if (!installed) return [item('Install', 'install', 'download'), item('Install fully local', 'install-local', 'laptop')];

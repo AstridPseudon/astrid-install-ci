@@ -79,7 +79,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   }
 
   function bootstrapScript(action = 'install', manifest, deleteData = false) {
-    if (!['install', 'update', 'uninstall'].includes(action)) throw new Error('Unknown installer action.');
+    if (!['install', 'update', 'update-app', 'uninstall'].includes(action)) throw new Error('Unknown installer action.');
     if (deleteData && action !== 'uninstall') throw new Error('Data deletion requires uninstall.');
     const ref = appRef();
     const raw = ref ? `https://raw.githubusercontent.com/banodoco/astrid-app/${ref.split('/').map(encodeURIComponent).join('/')}/public` : null;
@@ -98,6 +98,13 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
       const record = JSON.parse(filesystem.readFileSync(MODE_FILE, 'utf8'));
       return record?.schema_version === 1 && ['backend', 'local'].includes(record.mode) ? record.mode : null;
     } catch { return null; }
+  }
+  function hasOwnedSupervisor() {
+    try {
+      const record = JSON.parse(filesystem.readFileSync(paths.join(BACKEND_ROOT, 'pinokio-control.json'), 'utf8'));
+      return record.schema === 1 && Number.isInteger(record.pid) && record.pid > 0
+        && Number.isInteger(record.port) && record.port > 0 && record.port <= 65535;
+    } catch { return false; }
   }
   function saveModeStep(mode) {
     return customStep(async () => {
@@ -175,13 +182,13 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     const operations = lifecycle || await import('./lifecycle.mjs');
     const options = { filesystem, platform, environment, appDirectory: APP_DIR };
     const errors = [];
-    if (active) {
+    if (active || hasOwnedSupervisor()) {
       // Explicitly obtain the result: Pinokio logs but swallows direct hook
       // failures. The same idempotent request also serves the native Stop hook.
       try { await operations.requestGracefulStop(BACKEND_ROOT, options); }
       catch (error) { errors.push(error.message); }
       // Always perform Pinokio's final forced cleanup, even after grace expires.
-      try { await kernel.api.stop({ params: { uri } }); }
+      try { if (active) await kernel.api.stop({ params: { uri } }); }
       catch (error) { errors.push(error.message); }
     }
     try { await operations.waitForInstallerLock(BACKEND_ROOT, options); }
@@ -209,7 +216,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     getPaths: () => ({ root: BACKEND_ROOT, editor: EDITOR_DIR }), setting, appRef, bootstrapScript,
     shellStep, gitShellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
-    stopHook, stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
+    stopHook, stopOwnedStart, hasOwnedSupervisor, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),
     ...CONSTANTS };
 }

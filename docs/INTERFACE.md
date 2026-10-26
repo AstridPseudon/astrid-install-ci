@@ -14,7 +14,7 @@ Pinokio seeds its generated `ENVIRONMENT` from `_ENVIRONMENT`. The launcher read
 
 Remote bootstrap commands download the script into a temporary directory before executing it. Ref commands download the manifest there too. POSIX uses `curl -fsSL URL -o FILE` and `sh FILE`; Windows uses TLS 1.2, `Invoke-WebRequest -UseBasicParsing URL -OutFile FILE`, and `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath FILE)))`. The surrounding POSIX EXIT trap / PowerShell finally removes the temporary directory.
 
-Every installer invocation passes `--root R --managed-by pinokio`. Update adds `--update`. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
+Every installer invocation passes `--root R --managed-by pinokio`. Hosted Update uses `--update-app`: one installer process stages the candidate while Astrid runs and owns the short stop/switch/start sequence. The existing workspace is retained; a changed storage schema refuses before stopping and directs the user to the full migration updater. A supervisor started by the updater retains the ordinary authenticated control endpoint, so the menu can open, update, and stop it. Update adds `--update`. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
 
 The current POSIX bootstrap honors a supplied manifest before preparing tool/source pins, so it can run from raw GitHub without an astrid.haus manifest request. It uses absolute public uv/GitHub download URLs, not a URL relative to its own script. The source smoke runs its actual bytes with fake curl, uv and package operations. Windows has the equivalent manifest-selection logic; its native execution remains unqualified here.
 
@@ -29,7 +29,7 @@ The shell is Bash on macOS/Linux and PowerShell on Windows. `B(action)` below me
 | `install.js` | Port preflight; create `A/app`; `B(install)`; save `backend` | — |
 | `install-local.js` | — | Port preflight; create `A/app`; clone or validate/pull editor; `L(install)`; temporary build session; save `local` |
 | `add-local.js` | Await Stop and lock release; port preflight; clone or validate/pull editor; `L(update)`; temporary build session; save `local` | Refuses |
-| `update.js` | Await Stop and lock release; port preflight; `B(update)` | Await Stop and lock release; port preflight; validate/pull editor; `L(update)`; temporary build session |
+| `update.js` | Pull launcher; `B(update-app)` stages while live, verifies unchanged storage schema, switches/restarts, and restores the prior application if startup fails | Await Stop and lock release; port preflight; validate/pull editor; `L(update)`; temporary build session |
 | `start.js` | Port preflight; foreground hosted session; publish hosted URL after readiness | Port preflight; foreground local session; publish local URL after readiness |
 | `stop.js` | Request graceful stop; await `kernel.api.stop({params:{uri: A/pinokio/start.js}})`; wait for the per-user installer lock | Same; editor before Runtime |
 | `reset.js` | Await Stop and lock release; recursively remove only `A/app` | Same; no bootstrap/uninstaller |
@@ -114,7 +114,7 @@ After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done:
 | Installed backend, stopped | Start; Update; Switch to fully local; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Start running, no published URL | Starting Astrid…; Stop |
-| Ready owned Start | Open Astrid; Stop |
+| Ready owned Start | Open Astrid; Update and restart (hosted mode); Stop |
 | Install/add/update/reset/uninstall/delete/stop active | Operation status only |
 | External Astrid on 17340 | Explanation; Open Astrid only (hosted URL) |
 | Other program on 17340 | Conflict message only |

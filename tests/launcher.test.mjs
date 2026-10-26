@@ -66,7 +66,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
           const shells = script.run.filter((step) => step.method === 'shell.run');
           assert.deepEqual(plain(shells.map((step) => step.params.message)), map[name], name);
           for (const step of shells) assert.equal(step.params.shell, platform === 'win32' ? 'powershell.exe' : 'bash');
-          if (['update', 'add-local', 'uninstall', 'reset', 'stop'].includes(name)) assert.equal(script.run[0].method, app.stopOwnedStart);
+          if (['add-local', 'uninstall', 'reset', 'stop'].includes(name) || (name === 'update' && mode === 'local')) assert.equal(script.run[0].method, app.stopOwnedStart);
           if (name === 'start') {
             assert.equal(script.daemon, true);
             assert.deepEqual(plain(script.on.stop), plain(app.stopHook()));
@@ -123,7 +123,7 @@ test('menu: all operation, installation, starting, ready, external and conflict 
     assert.equal(pending.some((item) => item.default), false);
     local = app.localSetOpenTarget(mode);
     const ready = await menu({}, info);
-    assert.deepEqual(plain(ready.map((item) => item.text)), ['Open Astrid', 'Stop']);
+    assert.deepEqual(plain(ready.map((item) => item.text)), ['Open Astrid', ...(mode === 'backend' ? ['Update and restart'] : []), 'Stop']);
     assert.equal(ready[0].default, true);
     assert.equal(ready[0].popout, mode !== 'local');
     assert.equal(ready[0].target_full, mode === 'local' ? undefined : local.url);
@@ -143,12 +143,17 @@ test('menu: all operation, installation, starting, ready, external and conflict 
   }
 });
 
-test('Update pulls the launcher after the stop and lock check and fails before Astrid update on pull error', async () => {
+test('Update delegates hosted lifecycle to one app updater and retains full local lifecycle', async () => {
   for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
     const app = fakeApp(platform, 'feat/pinokio', mode);
     const script = await load('pinokio/update.js', app)({}, {});
-    const [stop, pull, portCheck] = script.run;
-    assert.equal(stop.method, app.stopOwnedStart);
+    const [stop, pull, portCheck] = mode === 'local' ? script.run : [null, script.run[0], null];
+    if (mode === 'local') assert.equal(stop.method, app.stopOwnedStart);
+    else {
+      assert.equal(script.run.length, 2);
+      assert.ok(script.run.every((step) => step.method === 'shell.run'));
+      assert.match(shellMessage(script.run[1], platform), /--update-app/);
+    }
     assert.equal(pull.method, 'shell.run');
     assert.equal(pull.params.path, app.APP_DIR);
     const pullMessage = shellMessage(pull, platform);
@@ -156,9 +161,9 @@ test('Update pulls the launcher after the stop and lock check and fails before A
     assert.match(pullMessage, /update the Pinokio launcher\./);
     assert.match(pullMessage, /undo those edits, then choose Update again\./);
     assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
-    assert.equal(portCheck.method, app.ensureDoorPortFree);
+    if (mode === 'local') assert.equal(portCheck.method, app.ensureDoorPortFree);
     const astridUpdate = script.run.findIndex((step) => step.method === 'shell.run' && shellMessage(step, platform).includes('--update'));
-    assert.ok(astridUpdate > 2, `Astrid update follows the launcher pull (${platform}, ${mode})`);
+    assert.ok(astridUpdate > (mode === 'local' ? 2 : 0), `Astrid update follows the launcher pull (${platform}, ${mode})`);
   }
   assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");
 });
@@ -393,7 +398,7 @@ test('maintenance never mutates after failed grace, forced stop or held installe
         waitForInstallerLock: async () => { log.push('lock'); if (reason === 'lock') throw new Error('Astrid is still running. Stop it in Pinokio, then try again.'); },
       },
     }), validateExistingEditorCheckout: () => false };
-    for (const name of ['update', 'reset', 'uninstall', 'uninstall-delete-data', 'add-local']) {
+    for (const name of ['reset', 'uninstall', 'uninstall-delete-data', 'add-local']) {
       log.length = 0;
       const module = await load(`pinokio/${name}.js`, app)({}, {});
       const kernel = { api: { running: { [app.paths.join(app.APP_DIR, 'pinokio', 'start.js')]: true }, stop: async () => {
@@ -453,4 +458,20 @@ test('a hung POSIX editor stays parented for the final tree kill and prevents Ru
   assert.equal(down, false);
   assert.equal(h.active.size, 2);
   for (const pid of h.active.keys()) h.options.killProcess(-pid, 'SIGKILL');
+});
+
+
+test('app updater supervisor remains controllable outside the native Start script', async () => {
+  const base = fakeApp('darwin');
+  const order = [];
+  const app = library.createApp({ platform: 'darwin', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: () => JSON.stringify({ schema: 1, pid: 123, port: 9876 }) },
+    lifecycle: { requestGracefulStop: async () => order.push('grace'), waitForInstallerLock: async () => order.push('lock') },
+  });
+  assert.equal(app.hasOwnedSupervisor(), true);
+  await app.stopOwnedStart({}, () => {}, { api: { running: {}, stop: async () => order.push('force') } });
+  assert.deepEqual(order, ['grace', 'lock']);
+  const { menu } = load('pinokio.js', { ...app, readInstallMode: () => 'backend', probeDoor: async () => ({ kind: 'astrid' }) });
+  const items = await menu({}, { exists: () => true, running: () => false });
+  assert.deepEqual(plain(items.map((item) => item.text)), ['Open Astrid', 'Update and restart', 'Stop']);
 });
