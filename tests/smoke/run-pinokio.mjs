@@ -146,7 +146,13 @@ function launchShell(step, environment, { background = false, onSpawn } = {}) {
   onSpawn?.(child);
 
   if (!background) return child.exit.then(({ code, signal }) => {
-    assert.equal(code, 0, `${step.params.shell} step failed (${signal || code}):\n${child.output}`);
+    const installLogPath = windows
+      ? path.join(environment.LOCALAPPDATA || environment.USERPROFILE, 'Astrid Runtime', 'logs', 'install.log')
+      : path.join(environment.HOME, '.local', 'share', 'astrid-runtime', 'logs', 'install.log');
+    const installLog = fs.existsSync(installLogPath)
+      ? `\nAstrid install log (${installLogPath}):\n${fs.readFileSync(installLogPath, 'utf8')}`
+      : '';
+    assert.equal(code, 0, `${step.params.shell} step failed (${signal || code}):\n${child.output}${installLog}`);
     return child;
   });
 
