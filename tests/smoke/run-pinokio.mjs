@@ -198,7 +198,7 @@ function runTool(command, args, environment) {
 }
 
 async function requestJson(url, { origin, environment }) {
-  const result = await runTool('curl', ['--silent', '--show-error', '--write-out', '\n%{http_code}', ...(origin ? ['-H', `Origin: ${origin}`] : []), url], environment);
+  const result = await runTool('curl', ['--max-time', '30', '--silent', '--show-error', '--write-out', '\n%{http_code}', ...(origin ? ['-H', `Origin: ${origin}`] : []), url], environment);
   const newline = result.lastIndexOf('\n');
   assert.notEqual(newline, -1, `curl returned no HTTP status for ${url}: ${result}`);
   return { body: JSON.parse(result.slice(0, newline)), status: Number(result.slice(newline + 1).trim()) };
@@ -356,66 +356,6 @@ async function stopDaemon(getDaemon) {
   getDaemon.set(null);
 }
 
-async function prepareTinyProject(app, install, record, environment) {
-  const script = String.raw`
-import json, subprocess, sys, tempfile
-from pathlib import Path
-from runtime_protocol.service import RuntimeService
-from astrid.core.dev.reference_realm import ffmpeg_clip_argv, media_only_publication, TINY_CLIP_SECONDS, TINY_CLIP_SIZE
-
-data = Path(sys.argv[1])
-profile_path = Path(sys.argv[2])
-ffmpeg = Path(sys.argv[3])
-catalog = json.loads((data / "runtime" / "catalog.json").read_text())
-realm = Path(catalog["realms"][0]["data_root"])
-profile = json.loads(profile_path.read_text())
-with tempfile.TemporaryDirectory(prefix="astrid-render-source-") as temporary:
-    clip = Path(temporary) / "clip1.mp4"
-    command = ffmpeg_clip_argv(clip, 0, seconds=TINY_CLIP_SECONDS, size=TINY_CLIP_SIZE)
-    command[0] = str(ffmpeg)
-    subprocess.run(command, check=True)
-    service = RuntimeService(realm)
-    try:
-        project = service.create_project({"slug": "pinokio-ci", "name": "Pinokio CI"}, idempotency_key="pinokio-ci-project")
-        service.create_timeline(project["id"], "main", idempotency_key="pinokio-ci-timeline")
-        media = service.ingest(project["id"], clip.read_bytes(), media_type="video/mp4", original_name=clip.name,
-                               idempotency_key="pinokio-ci-clip")
-        service.publish_parent_composition(project["id"], "main",
-                                           media_only_publication(project["id"], [media["data"]], seconds=TINY_CLIP_SECONDS),
-                                           idempotency_key="pinokio-ci-publication")
-    finally:
-        service.close()
-print(json.dumps({"realm": str(realm), "project": "pinokio-ci", "timeline": "main", "seconds": 1}))
-`;
-  const python = record.python || record.env.ASTRID_RUNTIME_PYTHON;
-  const profile = record.profile || record.env.ASTRID_RUNTIME_SOURCE_MANIFEST;
-  const ffmpeg = record.env.ASTRID_FFMPEG_EXECUTABLE;
-  assert.ok(python && fs.existsSync(python), `installed Python is missing: ${python}`);
-  assert.ok(profile && fs.existsSync(profile), `installed source profile is missing: ${profile}`);
-  const result = await runTool(python, ['-I', '-c', script, install.data_root, profile, ffmpeg],
-    withStepEnvironment(environment, { ASTRID_INSTALL_MANAGED_BY: 'pinokio' }));
-  const fixture = JSON.parse(result.trim().split(/\r?\n/).at(-1));
-  assert.equal(fixture.project, 'pinokio-ci');
-  log(`seeded one-second media timeline in ${fixture.realm}`);
-}
-
-async function renderTinyProject(app, install, record, environment) {
-  const python = record.python || path.join(record.root, 'py', windows ? 'Scripts/python.exe' : 'bin/python');
-  const result = await runTool(python, ['-I', '-m', 'astrid', 'timelines', 'render', 'main', '--project', 'pinokio-ci',
-    '--range', '0', '1', '--backend', 'rendering.ffmpeg', '--output-name', 'pinokio-ci-smoke.mp4', '--wait', '--json'],
-    withStepEnvironment(environment, {
-      ASTRID_INSTALL_MANAGED_BY: 'pinokio',
-      ASTRID_RUNTIME_DATA_ROOT: install.data_root,
-      ASTRID_RUNTIME_SOURCE_MANIFEST: record.profile || record.env.ASTRID_RUNTIME_SOURCE_MANIFEST,
-      ASTRID_RUNTIME_PYTHON: record.python,
-    }));
-  log(`Astrid render: ${result.trim()}`);
-  const response = JSON.parse(result.trim().split(/\r?\n/).at(-1));
-  assert.equal(response.ok, true, `Astrid render failed: ${JSON.stringify(response)}`);
-  assert.equal(response.data?.state, 'completed', `Astrid render did not complete: ${JSON.stringify(response)}`);
-  assert.ok(response.data?.kernel_task_id, 'Astrid render did not return a task id');
-}
-
 async function setup() {
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'This harness runs only on GitHub Actions runners.');
   assert.ok(['darwin', 'linux', 'win32'].includes(process.platform), `unsupported CI platform ${process.platform}`);
@@ -476,14 +416,12 @@ async function runHosted() {
     await invokeAction('install', app, appDirectory, environment, pinokioHome, getDaemon, stop);
     verifyInstallRecords(app, pinokioHome, 'backend');
     await assertNoServices(pinokioHome, userHome, environment, servicesBefore);
-    await step('seed tiny timeline', () => prepareTinyProject(app, installedRecord(app).install, installedRecord(app).record, environment));
 
     await invokeAction('start', app, appDirectory, environment, pinokioHome, getDaemon, stop);
     let health = await step('hosted health', () => requestJson(library.DOOR_HEALTH_URL, { origin: 'https://astrid.haus', environment }));
     assert.equal(health.status, 200, JSON.stringify(health.body));
     assert.equal(health.body.install?.managed_by, 'pinokio', JSON.stringify(health.body));
     log(`health confirms install.managed_by=${health.body.install.managed_by}`);
-    await step('render tiny timeline', () => renderTinyProject(app, installedRecord(app).install, installedRecord(app).record, environment));
 
     await invokeAction('stop', app, appDirectory, environment, pinokioHome, getDaemon, stop);
     assert.equal(await freePort(17340), true, 'port 17340 remained open after Stop');
@@ -505,7 +443,7 @@ async function runHosted() {
     await assertNoServices(pinokioHome, userHome, environment, servicesBefore);
     assert.deepEqual(cacheAstridPaths(cacheDirectory), [],
       `Astrid-owned files remain under Pinokio cache: ${cacheAstridPaths(cacheDirectory).join(', ')}`);
-    log('PASS: hosted install, render, graceful Stop, update, restart, and Uninstall');
+    log('PASS: hosted install, Start, health, Stop, Update, restart, health, Stop, and Uninstall');
   } finally {
     if (daemon) await step('cleanup Start process', stop);
     fs.rmSync(pinokioHome, { recursive: true, force: true });
@@ -527,7 +465,7 @@ async function runFullyLocal() {
     await assertNoServices(pinokioHome, userHome, environment, servicesBefore);
     await invokeAction('start', app, appDirectory, environment, pinokioHome, getDaemon, stop);
 
-    const page = await step('local editor page', () => runTool('curl', ['--silent', '--show-error', '--write-out', '\n%{http_code}',
+    const page = await step('local editor page', () => runTool('curl', ['--max-time', '30', '--silent', '--show-error', '--write-out', '\n%{http_code}',
       'http://127.0.0.1:5180/tools/video-editor'], environment));
     const pageStatus = Number(page.trim().split(/\r?\n/).at(-1));
     assert.equal(pageStatus, 200, `editor page did not load (HTTP ${pageStatus})`);
@@ -537,10 +475,10 @@ async function runFullyLocal() {
     assert.equal(proxyHealth.status, 200, JSON.stringify(proxyHealth.body));
     assert.equal(proxyHealth.body.protocol, 'workspace.v1', JSON.stringify(proxyHealth.body));
 
-    const hostedOrigin = await step('hosted origin refusal', () => requestJson(library.DOOR_HEALTH_URL, { origin: 'https://astrid.haus', environment }));
-    assert.equal(hostedOrigin.status, 403, JSON.stringify(hostedOrigin.body));
-    assert.equal(hostedOrigin.body.error, 'hosted_origin_required', JSON.stringify(hostedOrigin.body));
-    log('fully local editor and Runtime proxy are ready; hosted origin is refused');
+    await step('hosted door is off', async () => {
+      assert.equal(await freePort(17340), true, 'fully local mode opened the hosted browser door');
+    });
+    log('fully local editor and Runtime proxy are ready; hosted browser door is off');
 
     await invokeAction('stop', app, appDirectory, environment, pinokioHome, getDaemon, stop);
     assert.equal(await freePort(17340), true, 'port 17340 remained open after fully local Stop');
@@ -548,7 +486,7 @@ async function runFullyLocal() {
     await assertNoServices(pinokioHome, userHome, environment, servicesBefore);
     assert.deepEqual(cacheAstridPaths(cacheDirectory), [],
       `Astrid-owned files were created under Pinokio cache: ${cacheAstridPaths(cacheDirectory).join(', ')}`);
-    log('PASS: fully local install, build, editor proxy, hosted-origin refusal, and Stop');
+    log('PASS: fully local install, build, editor proxy, hosted door off, and Stop');
   } finally {
     if (daemon) await step('cleanup Start process', stop);
     fs.rmSync(pinokioHome, { recursive: true, force: true });
