@@ -187,7 +187,7 @@ The owner gives the go before release work starts. Keep this order:
 
 1. Confirm the minimal pin coherence check (C1) is in place before release.
 2. Fast-forward `astrid-runtime` `feat/pinokio` to `main`, then `astrid-agent` `feat/pinokio` to `main`. Both must contain the combined line. If either `main` has moved, rebase and re-pin the App manifest to the new heads.
-3. Merge `astrid-app` `feat/pinokio` to `main`. This deploys astrid.haus; its manifest pins the new App head and takes Runtime from the Agent's lock.
+3. Merge `astrid-app` `feat/pinokio` to `main`. This deploys astrid.haus; its manifest pins the new Agent head and takes Runtime from the Agent's lock.
 4. Right after the App release, confirm astrid.haus serves exactly that manifest with the served-manifest canary (C4).
 5. Make the Windows journey a required check in the repository ruleset.
 6. On `astrid-pinokio`, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty), remove the empty test commit `0c9913e`, delete `TESTING.md`, make `feat/pinokio` the new `main` in place of the placeholder, and set `main` as the default branch again.

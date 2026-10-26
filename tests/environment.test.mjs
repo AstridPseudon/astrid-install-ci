@@ -125,6 +125,14 @@ function checkEnvironment(env, f, installed = false) {
   } else assert.equal(env.RECORDED_VALUE, undefined);
 }
 
+function checkPinokioEnvironment(env, f) {
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH');
+  assert.equal(env[pathKey], f.environment.PATH);
+  assert.ok(env[pathKey].split(f.win ? ';' : ':').includes(f.p.join(f.home, 'bin')));
+  assert.equal(env.GIT_CONFIG_GLOBAL, f.environment.GIT_CONFIG_GLOBAL);
+  assert.equal(env.ASTRID_PINOKIO_ENVIRONMENT, undefined);
+}
+
 async function sessionProcesses(f, action, mode) {
   let pid = 6000, statuses = 0, stop;
   const active = new Map();
@@ -158,7 +166,7 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
     const f = fixture(platform, mode);
     let lockChecks = 0;
     const app = library.createApp({ ...f, probe: async () => ({ kind: 'free' }),
-      execute: (_command, _args, options) => { checkEnvironment(options.env, f); return { status: 0, stdout: library.EDITOR_REPOSITORY }; }, lifecycle: {
+      execute: (_command, _args, options) => { checkPinokioEnvironment(options.env, f); return { status: 0, stdout: library.EDITOR_REPOSITORY }; }, lifecycle: {
       requestGracefulStop: async () => {},
       waitForInstallerLock: async (root, options) => {
         await waitForInstallerLock(root, { ...options, installed: f.installed, run: async (_spec, options) => { checkEnvironment(options.env, f, true); lockChecks++; } });
@@ -172,11 +180,14 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
         if (typeof step.method === 'function') await step.method({ input: { confirmation: 'DELETE' } }, () => {}, { api: { running: {}, stop: async () => {} } });
         else if (step.method === 'shell.run') {
           const [helper, appDirectory, message, explicit] = wrapperArguments(step.params.message, f.win);
+          const pinokioEnvironment = step.params.env?.ASTRID_PINOKIO_ENVIRONMENT === '1';
+          if (/\bgit(?: -C| clone)\b/.test(message)) assert.equal(pinokioEnvironment, true, message);
           assert.equal(helper, f.p.join(f.appDirectory, 'pinokio', 'shell.mjs'));
           assert.equal(appDirectory, f.appDirectory);
-          await runShell({ appDirectory, message, explicit: JSON.parse(explicit), platform, environment: f.environment, getTemp: f.getTemp,
+          await runShell({ appDirectory, message, explicit: JSON.parse(explicit), platform, environment: f.environment, getTemp: f.getTemp, pinokioEnvironment,
             spawnProcess(command, args, options) {
-              checkEnvironment(options.env, f);
+              if (pinokioEnvironment) checkPinokioEnvironment(options.env, f);
+              else checkEnvironment(options.env, f);
               assert.equal(options.cwd, f.environment.HOME);
               assert.ok(command.endsWith(f.win ? 'powershell.exe' : '/bash'));
               if (f.win) assert.ok(args.at(-1).endsWith('exit $LASTEXITCODE'));
@@ -191,6 +202,30 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
     assert.ok(lockChecks >= 5);
   });
 }
+
+test('Git shell steps keep Pinokio PATH while Astrid shell steps remove it', async () => {
+  const f = fixture('linux', 'backend');
+  const app = library.createApp({ ...f });
+  async function childEnvironment(step) {
+    let result;
+    await runShell({ appDirectory: f.appDirectory, message: 'true', platform: f.platform,
+      environment: f.environment, pinokioEnvironment: step.params.env?.ASTRID_PINOKIO_ENVIRONMENT === '1',
+      spawnProcess(_command, _args, options) {
+        result = options.env;
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      },
+    });
+    return result;
+  }
+
+  const gitEnv = await childEnvironment(app.gitShellStep('git --version'));
+  checkPinokioEnvironment(gitEnv, f);
+
+  const astridEnv = await childEnvironment(app.shellStep('node --version'));
+  checkEnvironment(astridEnv, f);
+});
 
 test('environment verifies layout, path boundaries, Windows casing, temp failure and recorded paths', () => {
   assert.throws(() => policy.buildEnvironment({ appDirectory: '/not-pinokio/app' }), /home.*api/);

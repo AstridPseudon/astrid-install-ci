@@ -6,7 +6,6 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const posix = require('./platforms/posix');
 const windows = require('./platforms/windows');
-const { buildEnvironment } = require('./environment');
 
 // The factory keeps platform command generation testable without executing a
 // shell, querying the real ports, or writing into a real installation.
@@ -52,7 +51,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     return `git -C ${q(APP_DIR)} pull --ff-only || { printf '%s\\n' ${q(failure)} >&2; exit 1; }`;
   }
 
-  function shellStep(message, { cwd = APP_DIR, env, on } = {}) {
+  function shellStep(message, { cwd = APP_DIR, env, on, pinokioEnvironment = false } = {}) {
     // Pinokio resolves a shell at its prompt even after a nonzero exit. Emit
     // a dedicated failure event so the next step (especially local.set/save)
     // cannot run after a failed command. Split the marker in source to avoid
@@ -65,8 +64,11 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
       ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${command}\nif ($LASTEXITCODE -ne 0) { throw 'Astrid process failed.' }\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
       : `${command}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi\n(exit "$status")`;
     return { method: 'shell.run', params: { shell: shellName, path: cwd, message: wrapped, input: false,
+      ...(pinokioEnvironment ? { env: { ASTRID_PINOKIO_ENVIRONMENT: '1' } } : {}),
       on: [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, ...(on || [])] } };
   }
+
+  const gitShellStep = (message) => shellStep(message, { pinokioEnvironment: true });
 
   function appRef() {
     const ref = setting('ASTRID_APP_REF').trim();
@@ -112,7 +114,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     if (!filesystem.existsSync(EDITOR_DIR)) return false;
     if (!filesystem.existsSync(paths.join(EDITOR_DIR, '.git'))) throw new Error("Astrid's editor files are damaged. Choose Reset, then install again.");
     const result = execute('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], {
-      env: buildEnvironment({ appDirectory: APP_DIR, platform, environment, getTemp }), encoding: 'utf8', windowsHide: true });
+      env: environment, encoding: 'utf8', windowsHide: true });
     if (result.status !== 0 || result.stdout.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase() !== EDITOR_REPOSITORY.toLowerCase()) {
       throw new Error(`Astrid's editor folder doesn't come from ${EDITOR_REPOSITORY}. Choose Reset, then install again.`);
     }
@@ -205,7 +207,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   }
   return { APP_DIR, PROGRAMS_DIR, BACKEND_ROOT, EDITOR_DIR, MODE_FILE, isWindows, shellName, paths,
     getPaths: () => ({ root: BACKEND_ROOT, editor: EDITOR_DIR }), setting, appRef, bootstrapScript,
-    shellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
+    shellStep, gitShellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
     stopHook, stopOwnedStart, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),

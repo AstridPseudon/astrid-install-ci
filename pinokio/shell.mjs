@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url';
 import policy from './environment.js';
 
 export function runShell({ appDirectory, message, explicit = {}, platform = process.platform,
-  environment = process.env, spawnProcess = spawn, ...options }) {
-  const env = policy.buildEnvironment({ appDirectory, platform, environment, explicit, ...options });
+  environment = process.env, spawnProcess = spawn, pinokioEnvironment = false, ...options }) {
+  const inherited = { ...environment };
+  for (const key of Object.keys(inherited)) if (key.toUpperCase() === 'ASTRID_PINOKIO_ENVIRONMENT') delete inherited[key];
+  const env = pinokioEnvironment ? { ...inherited, ...explicit }
+    : policy.buildEnvironment({ appDirectory, platform, environment: inherited, explicit, ...options });
   const win = platform === 'win32';
   const shell = win ? path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '/bin/bash';
   const args = win ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ErrorActionPreference = 'Stop'\n$global:LASTEXITCODE = 0\n${message}\nexit $LASTEXITCODE`]
@@ -28,7 +31,8 @@ if (process.argv[1] && realpathSync(path.resolve(process.argv[1])) === realpathS
     const options = argument?.startsWith(prefix)
       ? JSON.parse(Buffer.from(argument.slice(prefix.length), 'base64').toString('utf8'))
       : { appDirectory: argument, message, explicit: JSON.parse(explicit) };
-    process.exitCode = await runShell(options);
+    const pinokioEnvironment = process.env.ASTRID_PINOKIO_ENVIRONMENT === '1';
+    process.exitCode = await runShell({ ...options, pinokioEnvironment });
   }
   catch (error) { console.error(`Astrid: ${error.message}`); process.exitCode = 1; }
 }
