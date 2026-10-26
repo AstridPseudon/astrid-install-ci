@@ -21,7 +21,7 @@ node --test --test-concurrency=1 tests/*.test.mjs
 node tests/check-bootstrap.mjs /Users/hannahomalley/Developer/astrid-video/astrid-local/labs/pinokio-app-bootstrap/public/install
 ```
 
-Track L ran `node --test tests/*.test.mjs` with Node 20.19.4: **45 passed, 0 failed, 0 skipped** on macOS. The bootstrap-source check passed for both raw-ref and checkout paths against `labs/pinokio-app/public/install`, with fake package operations. JavaScript syntax checks and `git diff --check` also passed. The Windows skip reasons above are printed on Windows; the three-platform environment/command matrix runs on every host.
+Track L ran `node --test tests/*.test.mjs` with Node 20.19.4: **46 passed, 0 failed, 0 skipped** on macOS. The bootstrap-source check passed for both raw-ref and checkout paths against `labs/pinokio-app/public/install`, with fake package operations. JavaScript syntax checks and `git diff --check` also passed. The Windows skip reasons above are printed on Windows; the three-platform environment/command matrix runs on every host. A legacy-record regression proves Start refuses Pinokio-owned tools/state while Reset still verifies the lock before removing program files.
 
 The tests load `pinokio.js` and every action module with fake kernel/info/app objects. The exact command fixture covers darwin, linux and win32, both modes, empty ref and `feat/pinokio`, including quoting of spaces/apostrophes. It tests menu state, URL publication ordering, stop awaiting, delete confirmation, pinned-tool/data selection, port classification, and success/failure/interrupt cleanup. Native POSIX subprocess fixtures also prove successful builds, failed builds whose leader exits before descendants, and interrupted builds leave no live fixture descendants.
 

@@ -186,7 +186,7 @@ test('environment verifies layout, path boundaries, Windows casing, temp failure
     assert.equal(env.TMPDIR, undefined);
     if (f.win) assert.equal(Object.keys(env).filter((key) => key.toUpperCase() === 'PATH').length, 1);
     else assert.ok(env.PATH.includes(outside));
-    assert.throws(() => policy.buildEnvironment({ ...f, recordEnv: { ASTRID_FFMPEG_EXECUTABLE: f.p.join(f.home, 'bin', 'ffmpeg') } }), /points into Pinokio/);
+    assert.equal(policy.buildEnvironment({ ...f, recordEnv: { ASTRID_FFMPEG_EXECUTABLE: f.p.join(f.home, 'bin', 'ffmpeg') } }).ASTRID_FFMPEG_EXECUTABLE, undefined);
   }
 });
 
@@ -215,4 +215,41 @@ test('native shell wrapper strips a Pinokio environment at the real child bounda
     assert.ok(env.PATH);
     assert.equal(app.BACKEND_ROOT, path.join(appDirectory, 'app', 'astrid'));
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+test('older Pinokio tool/cache records refuse Start while Reset still checks the lock with a clean environment', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const f = fixture(platform, 'backend');
+    const filesystem = { ...f.filesystem, readFileSync(file) {
+      const bytes = f.filesystem.readFileSync(file);
+      if (file.endsWith('version.json')) {
+        const record = JSON.parse(bytes);
+        record.env.ASTRID_FFMPEG_EXECUTABLE = f.p.join(f.home, 'bin', 'ffmpeg');
+        record.env.ASTRID_RUNTIME_DATA_ROOT = f.p.join(f.home, 'cache', 'XDG_DATA_HOME', 'Astrid');
+        record.env.PATH = `${f.p.join(f.home, 'bin')}${f.win ? ';' : ':'}${record.env.PATH}`;
+        return JSON.stringify(record);
+      }
+      if (file.endsWith('install.json')) return JSON.stringify({ ...JSON.parse(bytes), data_root: f.p.join(f.home, 'cache', 'XDG_DATA_HOME', 'Astrid') });
+      return bytes;
+    } };
+    assert.throws(() => installation(f.root, { ...f, filesystem }), /Choose Reset, then Install again/);
+    const order = [];
+    filesystem.rmSync = () => order.push('remove');
+    const app = library.createApp({ ...f, filesystem, lifecycle: {
+      waitForInstallerLock: (root, options) => waitForInstallerLock(root, { ...options, run: async (spec, options) => {
+        order.push('lock');
+        assert.equal(spec.command, f.installed.python);
+        assert.equal(options.env.HOME, f.environment.HOME);
+        assert.equal(options.env.RECORDED_VALUE, 'kept');
+        assert.equal(options.env.ASTRID_NODE_EXECUTABLE, f.installed.node);
+        assert.equal(options.env.ASTRID_FFMPEG_EXECUTABLE, undefined);
+        assert.equal(options.env.ASTRID_RUNTIME_DATA_ROOT, undefined);
+        assert.equal(options.env.XDG_DATA_HOME, undefined);
+        assert.ok(!options.env.PATH.includes(f.p.join(f.home, 'bin')));
+      } }),
+    } });
+    const script = await load('reset', app)({}, {});
+    for (const step of script.run) await step.method({}, () => {}, { api: { running: {} } });
+    assert.deepEqual(order, ['lock', 'remove']);
+  }
 });

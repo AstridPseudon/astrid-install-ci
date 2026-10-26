@@ -8,8 +8,7 @@ import app from './lib.js';
 import policy from './environment.js';
 import { bounded, createController, DOWN_MS, runCommand } from './lifecycle.mjs';
 
-export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env,
-  appDirectory, getTemp } = {}) {
+export function installationFiles(root, { platform = process.platform, filesystem = fs } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
   const read = (file) => JSON.parse(filesystem.readFileSync(file, 'utf8'));
   const version = filesystem.readFileSync(p.join(root, 'current'), 'utf8').trim();
@@ -32,23 +31,36 @@ export function installation(root, { platform = process.platform, filesystem = f
   for (const file of [node, npm, npx, record.python, record.profile]) {
     if (!filesystem.existsSync(file)) throw new Error(`Astrid installed file is missing: ${file}`);
   }
+  return { node, npm, npx, python: record.python, profile: record.profile, data: install.data_root, env: record.env };
+}
+
+export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env,
+  appDirectory, getTemp } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const installed = installationFiles(root, { platform, filesystem });
+  const { node, npm } = installed;
   const env = policy.buildEnvironment({ appDirectory: appDirectory || p.resolve(root, '..', '..'),
-    platform, environment, getTemp, recordEnv: { ...record.env,
+    platform, environment, getTemp, recordEnv: { ...installed.env,
     ASTRID_INSTALL_MANAGED_BY: 'pinokio', ASTRID_RUNTIME_DOOR_PORT: '17340',
-    ASTRID_RUNTIME_DATA_ROOT: install.data_root, ASTRID_SUPPORT_ROOT: install.data_root,
-    ASTRID_WORKSPACE_DISCOVERY: p.join(install.data_root, 'runtime', 'discovery.json'),
-    ASTRID_RUNTIME_PYTHON: record.python, ASTRID_RUNTIME_SOURCE_MANIFEST: record.profile,
+    ASTRID_RUNTIME_DATA_ROOT: installed.data, ASTRID_SUPPORT_ROOT: installed.data,
+    ASTRID_WORKSPACE_DISCOVERY: p.join(installed.data, 'runtime', 'discovery.json'),
+    ASTRID_RUNTIME_PYTHON: installed.python, ASTRID_RUNTIME_SOURCE_MANIFEST: installed.profile,
     // These are explicitly empty so .env.local cannot restore a checkout.
     ASTRID_RUNTIME_CHECKOUT: '', ASTRID_CHECKOUT: '', ASTRID_PUBLIC_CHECKOUT: '',
     ASTRID_START_COMMAND: p.join(root, platform === 'win32' ? 'run.cmd' : 'run'),
     npm_execpath: npm, npm_node_execpath: node,
     PORT: '5180', VITE_ASTRID_DYNAMIC_PROXY_PORT: '17336',
   } });
+  const recordedPath = Object.entries(installed.env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+  if (env.ASTRID_RUNTIME_DATA_ROOT !== installed.data || (recordedPath !== undefined && env.PATH !== recordedPath)
+    || Object.keys(installed.env).some((key) => key.toUpperCase() !== 'PATH' && !(key in env))) {
+    throw new Error("Astrid's installed environment points into Pinokio's home. Choose Reset, then Install again.");
+  }
   const pathKey = platform === 'win32' ? Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'Path' : 'PATH';
   const previousPath = env[pathKey] || '';
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
   env[pathKey] = `${p.dirname(node)}${platform === 'win32' ? ';' : ':'}${previousPath}`;
-  return { node, npm, npx, python: record.python, profile: record.profile, data: install.data_root, env };
+  return { ...installed, env };
 }
 
 export function commands(root, editor, mode, installed, platform = process.platform) {

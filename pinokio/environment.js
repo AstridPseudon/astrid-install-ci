@@ -84,9 +84,7 @@ function buildEnvironment({ appDirectory, platform = process.platform, environme
         for (const prior of Object.keys(env)) if (prior.toUpperCase() === 'PATH') delete env[prior];
         env.PATH = cleanPath(value, true);
       } else {
-        if (inHome(value) && !deliberatePath(value)) {
-          throw new Error(`Astrid environment ${key} points into Pinokio's home. Choose Reset, then Install again.`);
-        }
+        if (inHome(value) && !deliberatePath(value)) continue;
         // Windows environment names are case-insensitive.
         if (win) for (const prior of Object.keys(env)) if (prior.toUpperCase() === key.toUpperCase()) delete env[prior];
         env[key] = value;

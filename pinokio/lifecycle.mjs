@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import policy from './environment.js';
 
 export const STOP_FIRST = 'Astrid is still running. Stop it in Pinokio, then try again.';
 export const CONTROL_FILE = 'pinokio-control.json';
@@ -82,7 +83,13 @@ export async function waitForInstallerLock(root, { filesystem = fs, platform = p
   // No program files means there is no mutation to protect. A partial app with
   // files but no usable installed Python fails closed instead of deleting them.
   if (!filesystem.existsSync(p.dirname(root))) return;
-  installed ??= (await import('./session.mjs')).installation(root, { filesystem, platform, environment, appDirectory });
+  if (!installed) {
+    installed = (await import('./session.mjs')).installationFiles(root, { filesystem, platform });
+    // Older records may name Pinokio cache/tool paths. They cannot start a
+    // session, but must still be able to verify the lock and Reset/reinstall.
+    installed.env = policy.buildEnvironment({ appDirectory: appDirectory || p.resolve(root, '..', '..'),
+      platform, environment, recordEnv: installed.env });
+  }
   const helper = path.join(path.dirname(fileURLToPath(import.meta.url)), 'installer-lock.py');
   await run({ command: installed.python, args: ['-I', helper, String(timeoutMs / 1000)] },
     { env: installed.env, cwd: root, timeoutMs: timeoutMs + 2000 });
