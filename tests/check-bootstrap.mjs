@@ -9,9 +9,16 @@ import library from '../pinokio/lib.js';
 const source = path.resolve(process.argv[2]);
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-bootstrap-source-'));
 try {
+  const appDirectory = path.join(temp, 'pinokio-home', 'api', 'astrid-launcher');
+  const helpers = path.join(appDirectory, 'pinokio');
+  fs.mkdirSync(helpers, { recursive: true });
+  for (const file of ['shell.mjs', 'environment.js']) {
+    fs.copyFileSync(new URL(`../pinokio/${file}`, import.meta.url), path.join(helpers, file));
+  }
+  const realAppDirectory = fs.realpathSync(appDirectory);
   const python = spawnSync('python3', ['-c', 'import sys;print(sys.executable)'], { encoding: 'utf8' }).stdout.trim();
   assert.ok(python);
-  const bin = path.join(temp, 'bin'); fs.mkdirSync(bin);
+  const bin = path.join(temp, 'fakes', 'bin'); fs.mkdirSync(bin, { recursive: true });
   const uv = path.join(temp, 'home', '.local', 'share', 'astrid', 'bootstrap', 'uv');
   fs.mkdirSync(path.dirname(uv), { recursive: true });
   const executable = (file, body) => fs.writeFileSync(file, `#!${process.execPath}\n${body}`, { mode: 0o700 });
@@ -28,12 +35,23 @@ if(url.endsWith('/public/install'))fs.copyFileSync(process.env.BOOTSTRAP_SOURCE,
 else if(url.endsWith('/public/install-manifest.json'))fs.writeFileSync(file,JSON.stringify({tools:{uv:{version:'0.11.32'},python:{version:'3.11.13'}},agent:{sha:'a'.repeat(40)},runtime:{sha:'b'.repeat(40)}}));
 else throw new Error('unexpected download '+url);
 `);
-  const app = library.createApp({ platform: process.platform, appDirectory: path.join(temp, 'app'), environment: { ASTRID_APP_REF: 'feat/pinokio' } });
+  const app = library.createApp({ platform: process.platform, appDirectory: realAppDirectory, environment: { ASTRID_APP_REF: 'feat/pinokio' } });
   const evidence = path.join(temp, 'evidence.json');
-  const result = spawnSync('bash', ['--noprofile', '--norc', '-c', app.shellStep(app.bootstrapScript()).params.message], {
-    encoding: 'utf8', env: { ...process.env, HOME: path.join(temp, 'home'), XDG_DATA_HOME: path.join(temp, 'home', '.local', 'share'), XDG_STATE_HOME: path.join(temp, 'state'), TMPDIR: temp,
-      PATH: `${bin}:${process.env.PATH}`, REAL_PYTHON: python, EVIDENCE: evidence, URL_LOG: path.join(temp, 'urls'), BOOTSTRAP_SOURCE: source },
+  const fakeEnvironment = {
+    HOME: path.join(temp, 'home'),
+    XDG_DATA_HOME: path.join(temp, 'home', '.local', 'share'),
+    XDG_STATE_HOME: path.join(temp, 'state'),
+    TMPDIR: temp,
+    PATH: `${bin}:${process.env.PATH}`,
+    REAL_PYTHON: python,
+    EVIDENCE: evidence,
+    URL_LOG: path.join(temp, 'urls'),
+    BOOTSTRAP_SOURCE: source,
+  };
+  const runShellStep = (step) => spawnSync('bash', ['--noprofile', '--norc', '-c', step.params.message], {
+    encoding: 'utf8', env: process.env,
   });
+  const result = runShellStep(app.shellStep(app.bootstrapScript(), { env: fakeEnvironment }));
   assert.doesNotMatch(result.stdout, /ASTRID_PINOKIO_FAILURE/, result.stdout + result.stderr);
   assert.equal(result.status, 0, result.stderr);
   const args = JSON.parse(fs.readFileSync(evidence, 'utf8'));
@@ -49,10 +67,7 @@ else throw new Error('unexpected download '+url);
   fs.copyFileSync(source, path.join(publicDir, 'install'));
   const localManifest = path.join(publicDir, 'install-manifest.json');
   fs.writeFileSync(localManifest, JSON.stringify({ tools: { uv: { version: '0.11.32' }, python: { version: '3.11.13' } }, agent: { sha: 'a'.repeat(40) }, runtime: { sha: 'b'.repeat(40) } }));
-  const local = spawnSync('bash', ['--noprofile', '--norc', '-c', app.shellStep(app.bootstrapScript('install', localManifest)).params.message], {
-    encoding: 'utf8', env: { ...process.env, HOME: path.join(temp, 'home'), XDG_DATA_HOME: path.join(temp, 'home', '.local', 'share'), XDG_STATE_HOME: path.join(temp, 'state'), TMPDIR: temp,
-      PATH: `${bin}:${process.env.PATH}`, REAL_PYTHON: python, EVIDENCE: evidence, URL_LOG: path.join(temp, 'urls'), BOOTSTRAP_SOURCE: source },
-  });
+  const local = runShellStep(app.shellStep(app.bootstrapScript('install', localManifest), { env: fakeEnvironment }));
   assert.doesNotMatch(local.stdout, /ASTRID_PINOKIO_FAILURE/, local.stdout + local.stderr);
   assert.equal(local.status, 0, local.stderr);
   const localArgs = JSON.parse(fs.readFileSync(evidence));

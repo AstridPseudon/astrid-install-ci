@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const posix = require('./platforms/posix');
 const windows = require('./platforms/windows');
+const { buildEnvironment } = require('./environment');
 
 // The factory keeps platform command generation testable without executing a
 // shell, querying the real ports, or writing into a real installation.
@@ -40,7 +41,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     if (isWindows) {
       return [
         'try {',
-        'git pull --ff-only',
+        `git -C ${q(APP_DIR)} pull --ff-only`,
         `if ($LASTEXITCODE -ne 0) { throw ${q(failure)} }`,
         '} catch {',
         `Write-Output ${q(failure)}`,
@@ -48,7 +49,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
         '}',
       ].join('\n');
     }
-    return `git pull --ff-only || { printf '%s\\n' ${q(failure)} >&2; exit 1; }`;
+    return `git -C ${q(APP_DIR)} pull --ff-only || { printf '%s\\n' ${q(failure)} >&2; exit 1; }`;
   }
 
   function shellStep(message, { cwd = APP_DIR, env, on } = {}) {
@@ -56,11 +57,12 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     // a dedicated failure event so the next step (especially local.set/save)
     // cannot run after a failed command. Split the marker in source to avoid
     // matching the terminal's echo of the submitted command itself.
+    const command = `node ${[paths.join(APP_DIR, 'pinokio', 'shell.mjs'), APP_DIR, message, JSON.stringify(env || {})].map(q).join(' ')}`;
     const wrapped = isWindows
-      ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${message}\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
-      : `bash --noprofile --norc -c ${posix.quote(`set -eu\n${message}`)}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi`;
+      ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${command}\nif ($LASTEXITCODE -ne 0) { throw 'Astrid process failed.' }\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
+      : `${command}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi\n(exit "$status")`;
     return { method: 'shell.run', params: { shell: shellName, path: cwd, message: wrapped, input: false,
-      ...(env ? { env } : {}), on: [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, ...(on || [])] } };
+      on: [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, ...(on || [])] } };
   }
 
   function appRef() {
@@ -106,7 +108,8 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   function validateExistingEditorCheckout() {
     if (!filesystem.existsSync(EDITOR_DIR)) return false;
     if (!filesystem.existsSync(paths.join(EDITOR_DIR, '.git'))) throw new Error("Astrid's editor files are damaged. Choose Reset, then install again.");
-    const result = spawnSync('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], { encoding: 'utf8', windowsHide: true });
+    const result = spawnSync('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], {
+      env: buildEnvironment({ appDirectory: APP_DIR, platform, environment }), encoding: 'utf8', windowsHide: true });
     if (result.status !== 0 || result.stdout.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase() !== EDITOR_REPOSITORY.toLowerCase()) {
       throw new Error(`Astrid's editor folder doesn't come from ${EDITOR_REPOSITORY}. Choose Reset, then install again.`);
     }
@@ -165,7 +168,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     const uri = paths.join(APP_DIR, 'pinokio', 'start.js');
     const active = !kernel.api.running || Boolean(kernel.api.running[uri]);
     const operations = lifecycle || await import('./lifecycle.mjs');
-    const options = { filesystem, platform, environment };
+    const options = { filesystem, platform, environment, appDirectory: APP_DIR };
     const errors = [];
     if (active) {
       // Explicitly obtain the result: Pinokio logs but swallows direct hook

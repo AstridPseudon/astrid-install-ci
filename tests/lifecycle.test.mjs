@@ -66,7 +66,7 @@ async function executePython(args, env) {
   let output = ''; child.stdout.on('data', (chunk) => { output += chunk; }); child.stderr.on('data', (chunk) => { output += chunk; });
   const [code] = await once(child, 'close'); return { code, output };
 }
-test('actual lock helper rejects a held temp lock, accepts release and creates no missing lock', { skip: process.platform === 'win32' }, async () => {
+test('actual lock helper rejects a held temp lock, accepts release and creates no missing lock', { skip: process.platform === 'win32' && 'requires POSIX Python fcntl/flock' }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-installer-lock-'));
   let holder;
   try {

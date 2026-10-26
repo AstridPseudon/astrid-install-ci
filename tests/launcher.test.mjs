@@ -18,7 +18,9 @@ function load(file, app) {
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
 function fakeApp(platform, ref = '', mode = 'backend') {
-  const base = platform === 'win32' ? "C:\\Pinokio Apps\\O'Malley\\Astrid" : "/Pinokio Apps/O'Malley/Astrid";
+  const base = platform === 'win32'
+    ? "C:\\Users\\Test Home\\pinokio\\api\\Astrid O'Malley"
+    : "/Users/testhome/pinokio/api/Astrid O'Malley";
   const writes = [];
   const filesystem = {
     readFileSync(file) {
@@ -143,7 +145,7 @@ test('Update pulls the launcher after the stop and lock check and fails before A
     assert.equal(stop.method, app.stopOwnedStart);
     assert.equal(pull.method, 'shell.run');
     assert.equal(pull.params.path, app.APP_DIR);
-    assert.match(pull.params.message, /git pull --ff-only/);
+    assert.match(pull.params.message, /pull --ff-only/);
     assert.match(pull.params.message, /update the Pinokio launcher\./);
     assert.match(pull.params.message, /undo those edits, then choose Update again\./);
     assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
@@ -210,7 +212,7 @@ test('installer record selects authoritative Python, data root, Node and npm; no
       [p.join(root, 'versions', 'v1', 'version.json'), JSON.stringify({ root: versionRoot, python, profile, env: { ASTRID_NODE_EXECUTABLE: node } })],
       [p.join(root, 'install.json'), JSON.stringify({ owner: 'haus.astrid.runtime', managed_by: 'pinokio', data_root: data })],
     ]);
-    const installed = installation(root, { platform, filesystem: { readFileSync: (f) => files.get(f), existsSync: () => true }, environment: { PATH: '/ambient', ASTRID_RUNTIME_DATA_ROOT: '/wrong', ASTRID_RUNTIME_CHECKOUT: '/wrong', NODE_OPTIONS: '--bad', PYTHONNOUSERSITE: '1', GIT_CONFIG_GLOBAL: '/pinokio/gitconfig' } });
+    const installed = installation(root, { platform, filesystem: { readFileSync: (f) => files.get(f), existsSync: () => true, realpathSync: (f) => f }, environment: { PATH: '/ambient', ASTRID_RUNTIME_DATA_ROOT: '/wrong', ASTRID_RUNTIME_CHECKOUT: '/wrong', NODE_OPTIONS: '--bad', PYTHONNOUSERSITE: '1', GIT_CONFIG_GLOBAL: '/pinokio/gitconfig' } });
     assert.equal(installed.env.ASTRID_RUNTIME_DATA_ROOT, data);
     assert.equal(installed.env.ASTRID_RUNTIME_CHECKOUT, '');
     assert.equal(installed.env.NODE_OPTIONS, undefined);

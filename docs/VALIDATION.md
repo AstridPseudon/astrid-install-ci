@@ -8,16 +8,20 @@
 
 CI runs for pushes to `feat/pinokio` and `main`, pull requests, manual dispatches, and nightly upstream-drift checks.
 
-All launcher changes are in `/Users/hannahomalley/Developer/astrid-pinokio`, branch `main`, as explicitly requested. No remote is configured. No push or PR was made. No package installation, login service, real Runtime or editor server was run. The actual POSIX bootstrap was executed only against fakes. Tests did not probe the live door, use the live data root, or touch production/live-door/app-door. Temporary fixtures were removed.
+The current Track L environment work is in `/Users/hannahomalley/Developer/astrid-pinokio`, branch `feat/pinokio`. The source-backed Pinokio environment fixture was pushed first in its own commit. No package installation, login service, real Runtime or editor server was run locally. The actual POSIX bootstrap was executed only against fakes. Tests use a temporary HOME and `ASTRID_RUNTIME_DOOR_PORT=17341`; they do not probe the owner's live port or use real Astrid/agent state. Earlier launcher validation notes below remain as native qualification context.
+
+The environment contract covers every lifecycle script, both install modes, darwin/linux/win32 shell handoffs, serve/build/status/down children, and installer-lock checks. A native child-process test runs through the shell wrapper with the contaminated fixture, verifies the actual child environment and exit status, and also exercises a nested installer shell on POSIX. Installed records retain their explicit tool environment; inherited XDG, Python, Git, package/model/browser configuration and Pinokio PATH entries are excluded. Native Windows and Linux Pinokio integration still require runner/tester qualification.
 
 ## Commands run
+
+On Windows, six tests report an explicit skip reason because they exercise native POSIX shell, process-group/signal, or `fcntl`/`flock` behavior that Windows does not provide. The five skips in `tests/process.test.mjs` cover failed-shell signaling, ref bootstrap, descendant cleanup, installer-failure cleanup, and controlled Stop ordering. The skip in `tests/lifecycle.test.mjs` covers the real Python lock-helper fixture. The platform-independent lifecycle and launcher tests still run on Windows.
 
 ```sh
 node --test --test-concurrency=1 tests/*.test.mjs
 node tests/check-bootstrap.mjs /Users/hannahomalley/Developer/astrid-video/astrid-local/labs/pinokio-app-bootstrap/public/install
 ```
 
-Every tracked/untracked launcher `.js` and `.mjs` file is checked with `node --check`; `git diff --check` is also run before commit. Final result: 35 Node tests passed, the bootstrap-source check passed for both raw-ref and checkout paths, all 19 JavaScript modules passed syntax checks, the Python lock helper compiled, and the diff whitespace check passed.
+Track L ran `node --test tests/*.test.mjs` with Node 20.19.4: **45 passed, 0 failed, 0 skipped** on macOS. The bootstrap-source check passed for both raw-ref and checkout paths against `labs/pinokio-app/public/install`, with fake package operations. JavaScript syntax checks and `git diff --check` also passed. The Windows skip reasons above are printed on Windows; the three-platform environment/command matrix runs on every host.
 
 The tests load `pinokio.js` and every action module with fake kernel/info/app objects. The exact command fixture covers darwin, linux and win32, both modes, empty ref and `feat/pinokio`, including quoting of spaces/apostrophes. It tests menu state, URL publication ordering, stop awaiting, delete confirmation, pinned-tool/data selection, port classification, and success/failure/interrupt cleanup. Native POSIX subprocess fixtures also prove successful builds, failed builds whose leader exits before descendants, and interrupted builds leave no live fixture descendants.
 

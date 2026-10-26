@@ -77,12 +77,12 @@ export async function requestGracefulStop(root, { filesystem = fs, request = fet
   return result;
 }
 export async function waitForInstallerLock(root, { filesystem = fs, platform = process.platform, environment = process.env,
-  installed, run = runCommand, timeoutMs = LOCK_MS } = {}) {
+  appDirectory, installed, run = runCommand, timeoutMs = LOCK_MS } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
   // No program files means there is no mutation to protect. A partial app with
   // files but no usable installed Python fails closed instead of deleting them.
   if (!filesystem.existsSync(p.dirname(root))) return;
-  installed ??= (await import('./session.mjs')).installation(root, { filesystem, platform, environment });
+  installed ??= (await import('./session.mjs')).installation(root, { filesystem, platform, environment, appDirectory });
   const helper = path.join(path.dirname(fileURLToPath(import.meta.url)), 'installer-lock.py');
   await run({ command: installed.python, args: ['-I', helper, String(timeoutMs / 1000)] },
     { env: installed.env, cwd: root, timeoutMs: timeoutMs + 2000 });

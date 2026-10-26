@@ -22,6 +22,8 @@ You're testing Astrid's Pinokio launcher on a clean Mac: install, start, open in
 
 Commands assume Pinokio's home is `~/pinokio`; if Pinokio's Settings shows another, use that. Save Pinokio's Terminal output after each action.
 
+If you installed before the environment isolation change, choose Reset, then Install again. Your Astrid state was in Pinokio's cache folder; a fresh install uses the normal OS locations.
+
 ## 2. Get the test launcher into Pinokio
 
 1. In Pinokio, paste `https://github.com/banodoco/astrid-pinokio` into the search box (or Download from URL) and install it with the suggested folder name, `astrid-pinokio.git`. During testing the repo's default branch is `feat/pinokio`, so this gets the test launcher. If it doesn't work, run this, then restart Pinokio:
@@ -166,7 +168,7 @@ In this order:
 
 1. Fast-forward astrid-runtime `feat/pinokio` → `main`, then astrid-agent `feat/pinokio` → `main`. If a `main` has moved, rebase and re-pin the App's install manifest to the new heads.
 2. Merge astrid-app `feat/pinokio` → `main`. This deploys astrid.haus, with production installer support for Pinokio and the quiet "Or install with Pinokio" links.
-3. Straight after: on astrid-pinokio, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty) and delete TESTING.md, make `feat/pinokio` the new `main` (replacing the placeholder), and set `main` as the default branch again.
+3. Straight after: on astrid-pinokio, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty), drop the empty test commit `0c9913e`, and delete TESTING.md, make `feat/pinokio` the new `main` (replacing the placeholder), and set `main` as the default branch again.
 4. In Pinokio, signed in: pinokio.co → Settings → Repository access → connect GitHub and grant `banodoco` (this needs an org Owner). Paste `https://github.com/banodoco/astrid-pinokio` into Pinokio's search to import it. Open **Manage this project** and set the description to "Community Beta". From now on, the pinokio.co/item link works.
 5. Send the Windows tester https://pinokio.co/item?uri=https://github.com/banodoco/astrid-pinokio and post in #testers-wanted.
 6. Delete the `feat/pinokio` branches, locally and on GitHub.

@@ -5,9 +5,11 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import app from './lib.js';
+import policy from './environment.js';
 import { bounded, createController, DOWN_MS, runCommand } from './lifecycle.mjs';
 
-export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env } = {}) {
+export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env,
+  appDirectory, getTemp } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
   const read = (file) => JSON.parse(filesystem.readFileSync(file, 'utf8'));
   const version = filesystem.readFileSync(p.join(root, 'current'), 'utf8').trim();
@@ -30,12 +32,8 @@ export function installation(root, { platform = process.platform, filesystem = f
   for (const file of [node, npm, npx, record.python, record.profile]) {
     if (!filesystem.existsSync(file)) throw new Error(`Astrid installed file is missing: ${file}`);
   }
-  const env = { ...environment, ...record.env };
-  // No ambient developer checkout or discovery may redirect the editor.
-  for (const key of ['PYTHONPATH', 'PYTHONHOME', 'PYTHONNOUSERSITE', 'GIT_CONFIG_GLOBAL', 'NODE_OPTIONS', 'ASTRID_WORKSPACE_ENDPOINT', 'ASTRID_WORKSPACE_CREDENTIAL',
-    'ASTRID_RUNTIME_CHECKOUT', 'ASTRID_CHECKOUT', 'ASTRID_PUBLIC_CHECKOUT', 'ASTRID_APP_HOSTED_ORIGIN_CONFIG',
-    'ASTRID_APP_PAIRED_RELAY_ORIGIN']) delete env[key];
-  Object.assign(env, {
+  const env = policy.buildEnvironment({ appDirectory: appDirectory || p.resolve(root, '..', '..'),
+    platform, environment, getTemp, recordEnv: { ...record.env,
     ASTRID_INSTALL_MANAGED_BY: 'pinokio', ASTRID_RUNTIME_DOOR_PORT: '17340',
     ASTRID_RUNTIME_DATA_ROOT: install.data_root, ASTRID_SUPPORT_ROOT: install.data_root,
     ASTRID_WORKSPACE_DISCOVERY: p.join(install.data_root, 'runtime', 'discovery.json'),
@@ -45,7 +43,7 @@ export function installation(root, { platform = process.platform, filesystem = f
     ASTRID_START_COMMAND: p.join(root, platform === 'win32' ? 'run.cmd' : 'run'),
     npm_execpath: npm, npm_node_execpath: node,
     PORT: '5180', VITE_ASTRID_DYNAMIC_PROXY_PORT: '17336',
-  });
+  } });
   const pathKey = platform === 'win32' ? Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'Path' : 'PATH';
   const previousPath = env[pathKey] || '';
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
@@ -72,7 +70,7 @@ export function commands(root, editor, mode, installed, platform = process.platf
     preview: { command: installed.node, args: ['scripts/dev-local-workspace.mjs', '--preview', '--preview-dir', p.join(editor, 'dist')] },
   };
 }
-const environmentCmd = (env) => env.ComSpec || env.COMSPEC || path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
+const environmentCmd = (env) => env.ComSpec || env.COMSPEC || path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
 
 // On macOS a disappearing/zombie-only process group can report EPERM rather
 // than ESRCH. Ignore that only after ps confirms no live group members remain.
@@ -167,8 +165,8 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (item.released || !item.child.pid) return;
     if (item.closed && platform === 'win32') { item.released = true; return; }
     if (platform === 'win32') {
-      const killer = spawnProcess(path.win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'),
-        ['/PID', String(item.child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      const killer = spawnProcess(path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'taskkill.exe'),
+        ['/PID', String(item.child.pid), '/T', '/F'], { env, stdio: 'ignore', windowsHide: true });
       await new Promise((resolve, reject) => { killer.once('error', reject); killer.once('close', (code) => code === 0 || item.closed ? resolve() : reject(new Error(`Could not stop Astrid process tree ${item.child.pid}.`))); });
     } else {
       if (!item.closed) signalGroup(item.child.pid, 'SIGTERM', { killProcess });

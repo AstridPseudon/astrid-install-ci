@@ -9,6 +9,15 @@ import library from '../pinokio/lib.js';
 import { runSession } from '../pinokio/session.mjs';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function makeShellApp(tempRoot, name) {
+  const appDirectory = path.join(tempRoot, 'pinokio-home', 'api', name);
+  const helperDirectory = path.join(appDirectory, 'pinokio');
+  fs.mkdirSync(helperDirectory, { recursive: true });
+  for (const file of ['shell.mjs', 'environment.js']) {
+    fs.copyFileSync(new URL(`../pinokio/${file}`, import.meta.url), path.join(helperDirectory, file));
+  }
+  return fs.realpathSync(appDirectory);
+}
 async function execute(command, env) {
   const child = spawn('bash', ['--noprofile', '--norc', '-c', command], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
@@ -19,24 +28,29 @@ async function execute(command, env) {
 }
 const writeExecutable = (file, text) => fs.writeFileSync(file, text, { mode: 0o700 });
 
-test('POSIX failed shell commands emit a Pinokio break event and do not run later commands', { skip: process.platform === 'win32' }, async () => {
-  const app = library.createApp();
-  const step = app.shellStep('false\necho MUST_NOT_RUN');
-  const result = await execute(step.params.message, process.env);
-  assert.match(result.stdout, /ASTRID_PINOKIO_FAILURE/);
-  assert.doesNotMatch(result.stdout, /MUST_NOT_RUN/);
-  assert.deepEqual(step.params.on, [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }]);
+test('POSIX failed shell commands emit a Pinokio break event and do not run later commands', { skip: process.platform === 'win32' && 'requires POSIX shell behavior' }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-launcher-shell-failure-'));
+  try {
+    const app = library.createApp({ appDirectory: makeShellApp(temp, 'shell-failure') });
+    const step = app.shellStep('false\necho MUST_NOT_RUN');
+    const result = await execute(step.params.message, process.env);
+    assert.match(result.stdout, /ASTRID_PINOKIO_FAILURE/);
+    assert.doesNotMatch(result.stdout, /MUST_NOT_RUN/);
+    assert.deepEqual(step.params.on, [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }]);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
 
-test('POSIX ref bootstrap downloads matching files, forwards manifest, and removes temporary files', { skip: process.platform === 'win32' }, async () => {
+test('POSIX ref bootstrap downloads matching files, forwards manifest, and removes temporary files', { skip: process.platform === 'win32' && 'requires bash and POSIX shell behavior' }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-launcher-bootstrap-'));
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-launcher-fake-bin-'));
   try {
     const evidence = path.join(temp, 'evidence.json');
-    const bin = path.join(temp, 'bin'); fs.mkdirSync(bin);
     // Fake curl supplies inert bootstrap bytes rather than accessing a network.
-    writeExecutable(path.join(bin, 'curl'), `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const url=a[1];const file=a[a.indexOf('-o')+1];\nfs.appendFileSync(process.env.URL_LOG,url+'\\n');\nfs.writeFileSync(file,url.endsWith('/install')?\`#!/bin/sh\\npython3 -c 'import json,os,sys;json.dump(sys.argv[1:],open(os.environ["EVIDENCE"],"w"))' "$@"\\n\`:'{}');\n`);
-    const app = library.createApp({ platform: 'darwin', appDirectory: path.join(temp, "O'Malley app"), environment: { ASTRID_APP_REF: 'feat/pinokio' } });
-    const result = await execute(app.shellStep(app.bootstrapScript()).params.message, { ...process.env, TMPDIR: temp, PATH: `${bin}:${process.env.PATH}`, EVIDENCE: evidence, URL_LOG: path.join(temp, 'urls') });
+    writeExecutable(path.join(fakeBin, 'curl'), `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);const url=a[1];const file=a[a.indexOf('-o')+1];\nfs.appendFileSync(process.env.URL_LOG,url+'\\n');\nfs.writeFileSync(file,url.endsWith('/install')?\`#!/bin/sh\\npython3 -c 'import json,os,sys;json.dump(sys.argv[1:],open(os.environ["EVIDENCE"],"w"))' "$@"\\n\`:'{}');\n`);
+    const app = library.createApp({ platform: 'darwin', appDirectory: makeShellApp(temp, "O'Malley app"), environment: { ASTRID_APP_REF: 'feat/pinokio' } });
+    const result = await execute(app.shellStep(app.bootstrapScript(), { env: {
+      PATH: `${fakeBin}:${process.env.PATH}`, EVIDENCE: evidence, URL_LOG: path.join(temp, 'urls'),
+    } }).params.message, process.env);
     assert.equal(result.stderr, '');
     assert.doesNotMatch(result.stdout, /ASTRID_PINOKIO_FAILURE/);
     const argv = JSON.parse(fs.readFileSync(evidence));
@@ -47,10 +61,10 @@ test('POSIX ref bootstrap downloads matching files, forwards manifest, and remov
       'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install',
       'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json',
     ]);
-  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); fs.rmSync(fakeBin, { recursive: true, force: true }); }
 });
 
-test('real POSIX fake Runtime/build processes leave no live descendants after success, failure or interrupt', { skip: process.platform === 'win32' }, async () => {
+test('real POSIX fake Runtime/build processes leave no live descendants after success, failure or interrupt', { skip: process.platform === 'win32' && 'requires POSIX process groups and signals' }, async () => {
   for (const outcome of ['success', 'failure', 'interrupt']) {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-launcher-tree-'));
     const signals = new EventEmitter();
@@ -91,10 +105,10 @@ test('real POSIX fake Runtime/build processes leave no live descendants after su
 });
 
 
-test('checkout bootstrap cache is removed on installer failure before a local build', { skip: process.platform === 'win32' }, async () => {
+test('checkout bootstrap cache is removed on installer failure before a local build', { skip: process.platform === 'win32' && 'requires bash and POSIX shell behavior' }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-bootstrap-failure-'));
   try {
-    const app = library.createApp({ platform: 'darwin', appDirectory: temp, environment: {} });
+    const app = library.createApp({ platform: 'darwin', appDirectory: makeShellApp(temp, 'bootstrap-failure'), environment: {} });
     const publicDir = path.join(app.EDITOR_DIR, 'public');
     fs.mkdirSync(path.join(publicDir, 'bootstrap-venv'), { recursive: true });
     fs.writeFileSync(path.join(publicDir, 'install'), 'exit 7\n');
@@ -105,7 +119,7 @@ test('checkout bootstrap cache is removed on installer failure before a local bu
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
 
-test('real controlled Stop drains the editor before down and releases the foreground temp lock', { skip: process.platform === 'win32' }, async () => {
+test('real controlled Stop drains the editor before down and releases the foreground temp lock', { skip: process.platform === 'win32' && 'requires POSIX signals, Python fcntl, and process groups' }, async () => {
   const { requestGracefulStop } = await import('../pinokio/lifecycle.mjs');
   const { spawnSync } = await import('node:child_process');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-graceful-stop-'));
