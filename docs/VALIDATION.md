@@ -8,6 +8,8 @@
 
 CI runs for pushes to `feat/pinokio` and `main`, pull requests, manual dispatches, and nightly upstream-drift checks.
 
+Jobs have hang guards: 10 minutes for Unit and 30 minutes for install smoke and Fully local. These bounds allow ample room for cold downloads and builds. The smoke harness logs START/END with elapsed seconds for each launcher step, seed, render, and HTTP check. Foreground commands run asynchronously so the long-lived Start process's output keeps draining; a noisy-server regression covers pipe backpressure and stdin EOF.
+
 The current Track L environment work is in `/Users/hannahomalley/Developer/astrid-pinokio`, branch `feat/pinokio`. The source-backed Pinokio environment fixture was pushed first in its own commit. No package installation, login service, real Runtime or editor server was run locally. The actual POSIX bootstrap was executed only against fakes. Tests use a temporary HOME and `ASTRID_RUNTIME_DOOR_PORT=17341`; they do not probe the owner's live port or use real Astrid/agent state. Earlier launcher validation notes below remain as native qualification context.
 
 The environment contract covers every lifecycle script, both install modes, darwin/linux/win32 shell handoffs, serve/build/status/down children, and installer-lock checks. A native child-process test runs through the shell wrapper with the contaminated fixture, verifies the actual child environment and exit status, and also exercises a nested installer shell on POSIX. Installed records retain their explicit tool environment; inherited XDG, Python, Git, package/model/browser configuration and Pinokio PATH entries are excluded. Native Windows and Linux Pinokio integration still require runner/tester qualification.

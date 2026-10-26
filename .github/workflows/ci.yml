@@ -15,6 +15,7 @@ jobs:
   unit:
     name: Unit (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +31,7 @@ jobs:
   pinokio-smoke:
     name: Pinokio smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +46,7 @@ jobs:
   fully-local:
     name: Fully local (ubuntu-latest)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
