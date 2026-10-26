@@ -25,6 +25,7 @@ jobs:
         with:
           node-version: 20.19.4
       - run: node --test --test-reporter=spec tests/*.test.mjs
+        shell: bash
 
   pinokio-smoke:
     name: Pinokio smoke (${{ matrix.os }})

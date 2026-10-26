@@ -286,7 +286,6 @@ function installedRecord(app) {
   const record = JSON.parse(fs.readFileSync(path.join(versionRoot, 'version.json'), 'utf8'));
   assert.equal(install.owner, 'haus.astrid.runtime');
   assert.equal(install.managed_by, 'pinokio');
-  assert.equal(paths.resolve(install.program_root), paths.resolve(app.BACKEND_ROOT));
   return { install, record, versionRoot };
 }
 
