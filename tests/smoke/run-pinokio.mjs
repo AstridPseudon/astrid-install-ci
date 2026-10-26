@@ -93,6 +93,17 @@ function makeNodeLauncher(binDirectory) {
   }
 }
 
+function makeGitLauncher(gitDirectory) {
+  if (!windows) return;
+  fs.mkdirSync(gitDirectory, { recursive: true });
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+  const where = path.win32.join(systemRoot, 'System32', 'where.exe');
+  const git = execFileSync(where, ['git.exe'], { encoding: 'utf8' })
+    .split(/\r?\n/).map((candidate) => candidate.trim()).find(Boolean);
+  assert.ok(git, 'Git must be available on the Windows runner');
+  fs.writeFileSync(path.join(gitDirectory, 'git.cmd'), `@echo off\r\n"${git}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
+}
+
 function prepareCheckout(source, appDirectory) {
   const branch = 'ci-smoke';
   execFileSync('git', ['-C', source, 'checkout', '-B', branch, 'HEAD'], { stdio: 'inherit' });
@@ -383,11 +394,17 @@ async function setup() {
   fs.mkdirSync(binDirectory, { recursive: true });
   fs.mkdirSync(guardDirectory, { recursive: true });
   makeNodeLauncher(binDirectory);
+  const pinokioGitDirectory = path.join(binDirectory, 'miniforge', 'Library', 'bin');
+  makeGitLauncher(pinokioGitDirectory);
   makeFfmpegGuard(guardDirectory);
   prepareCheckout(repository, appDirectory);
 
   const environment = makeEnvironment(pinokioHome, process.platform);
   assert.ok(environment && typeof environment === 'object', 'Pinokio env fixture must return an environment object');
+  if (windows) {
+    assert.ok(environment[pathKey(environment)].split(paths.delimiter).includes(pinokioGitDirectory),
+      'fake Pinokio Git directory must be on PATH');
+  }
   if (windows) {
     for (const key of ['PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432']) {
       if (process.env[key]) environment[key] = process.env[key];
