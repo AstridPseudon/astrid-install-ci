@@ -6,12 +6,14 @@ You're testing Astrid's Pinokio launcher. On Mac, check install, start, open in 
 
 | Repo | `feat/pinokio` head |
 |---|---|
-| banodoco/astrid-pinokio | `d61ca1167550` |
-| banodoco/astrid-app | `93cca9cd9559` |
-| banodoco/astrid-agent | `b83d62119f0c` |
+| banodoco/astrid-pinokio | `1b6974f05c16` |
+| banodoco/astrid-app | `6ffcae66271a` |
+| banodoco/astrid-agent | `afbb877d4727` |
 | banodoco/astrid-runtime | `5c1977cd6b8b` |
 
 The App manifest's Runtime pin comes from the Agent's lock.
+
+Right now, the App manifest pins Agent `b83d62119f0c` and Runtime `5c1977cd6b8b`.
 
 ## 1. Before you start
 
@@ -95,7 +97,7 @@ Do these in order.
    curl -fsSL https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install | ASTRID_INSTALL_MANIFEST_URL=https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json sh -s -- --uninstall
    ```
 3. In Pinokio, choose **Install**, then Start, then Open. Your project should still be there.
-4. **Uninstall.** You should see `Workspace kept at …`. Run the skills `ls` line from 3.7 again and note whether Astrid's links are gone. Install again, and your project should still be there.
+4. **Uninstall.** You should see `Workspace kept at …`. Install again, and your project should still be there.
 5. **Uninstall and delete all Astrid data…**, last. Type anything except DELETE, and you should see `Cancelled, so nothing was deleted.` Run it again and type `DELETE`. The workspace folder and your projects should be gone.
 
 ## 7. If you have time
