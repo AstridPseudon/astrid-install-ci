@@ -73,7 +73,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   function appRef() {
     const ref = setting('ASTRID_APP_REF').trim();
     if (ref && (ref.startsWith('-') || /[\s\\?#\x00-\x1f]/.test(ref) || ref.split('/').some((part) => !part || part === '..' || part === '.'))) {
-      throw new Error('ASTRID_APP_REF must be a Git branch or tag, such as feat/pinokio.');
+      throw new Error('ASTRID_APP_REF must be a Git branch or tag, such as main.');
     }
     return ref;
   }

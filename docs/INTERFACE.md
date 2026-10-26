@@ -9,7 +9,7 @@ Pinokio seeds its generated `ENVIRONMENT` from `_ENVIRONMENT`. The launcher read
 | Source | macOS / Linux bootstrap | Windows bootstrap | Manifest | Editor clone |
 | --- | --- | --- | --- | --- |
 | Empty ref | `https://astrid.haus/install` | `https://astrid.haus/install.ps1` | Bootstrap's production default | `banodoco/astrid-app`, branch `main` |
-| Ref `feat/pinokio` | `https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install` | Same directory, `install.ps1` | Same directory, `install-manifest.json`, downloaded and passed with `--manifest` | Same repository, branch `feat/pinokio` |
+| Explicit ref `main` | `https://raw.githubusercontent.com/banodoco/astrid-app/main/public/install` | Same directory, `install.ps1` | Same directory, `install-manifest.json`, downloaded and passed with `--manifest` | Same repository, branch `main` |
 | Fully local install/add/update | `sh E/public/install` | `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File E/public/install.ps1` | Always `--manifest M` | Existing validated checkout |
 
 Remote bootstrap commands download the script into a temporary directory before executing it. Ref commands download the manifest there too. POSIX uses `curl -fsSL URL -o FILE` and `sh FILE`; Windows uses TLS 1.2, `Invoke-WebRequest -UseBasicParsing URL -OutFile FILE`, and `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath FILE)))`. The surrounding POSIX EXIT trap / PowerShell finally removes the temporary directory.

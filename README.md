@@ -40,7 +40,7 @@ If you installed Astrid with its install command, uninstall that copy first. You
 
 In Pinokio's `ENVIRONMENT` file:
 
-- `ASTRID_APP_REF`: leave it empty for normal use. To test an astrid-app branch, set it (for example `feat/pinokio`). After installing fully local, Reset and install again to change it.
+- `ASTRID_APP_REF`: leave it empty for normal use. To use a specific astrid-app branch, set its name. After installing fully local, Reset and install again to change it.
 - Pinokio's `PINOKIO_SCRIPT_DEFAULT=false` setting is the off switch for automatic Start.
 
 How it works: [commands and installer interface](docs/INTERFACE.md) and [validation notes](docs/VALIDATION.md).

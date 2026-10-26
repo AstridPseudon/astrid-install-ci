@@ -6,7 +6,7 @@
 - **Pinokio smoke** runs Install, Start, health, Stop, Update, Start, health, Stop and Uninstall on macOS, Ubuntu and Windows inside a temporary Pinokio home. It checks the downloaded FFmpeg pin, cache/data paths, service registration and port cleanup.
 - **Fully local** is manual-only (`workflow_dispatch`). It installs and builds the local editor on Ubuntu, starts it on port 5180, checks the Runtime health proxy, and confirms the hosted browser door port stays closed (`--hosted-origin off` creates no door).
 
-CI runs for pushes to `feat/pinokio` and `main`, pull requests, manual dispatches, and nightly upstream-drift checks.
+CI runs for pushes to the configured release and production branches, pull requests, manual dispatches, and nightly upstream-drift checks.
 
 Jobs have hang guards: 5 minutes for Unit and 15 minutes for Pinokio smoke and Fully local. The smoke harness logs START/END with elapsed seconds for each launcher action and HTTP check. Fully local curl requests have a 30-second per-request limit. Foreground commands run asynchronously so the long-lived Start process's output keeps draining; a noisy-server regression covers pipe backpressure and stdin EOF.
 
@@ -24,7 +24,7 @@ before treating that failure as harness-only.
 - The fully local preview request hangs in the current smoke run; its manual-only job now bounds each curl request. Revisit with the testing round.
 - Fully local does not run on push because it is manual-only. Revisit with the testing round.
 
-The current Track L environment work is in `/Users/hannahomalley/Developer/astrid-pinokio`, branch `feat/pinokio`. The source-backed Pinokio environment fixture was pushed first in its own commit. No package installation, login service, real Runtime or editor server was run locally. The actual POSIX bootstrap was executed only against fakes. Tests use a temporary HOME and `ASTRID_RUNTIME_DOOR_PORT=17341`; they do not probe the owner's live port or use real Astrid/agent state. Earlier launcher validation notes below remain as native qualification context.
+The Track L environment work is in `/Users/hannahomalley/Developer/astrid-pinokio`. The source-backed Pinokio environment fixture was pushed first in its own commit. No package installation, login service, real Runtime or editor server was run locally. The actual POSIX bootstrap was executed only against fakes. Tests use a temporary HOME and `ASTRID_RUNTIME_DOOR_PORT=17341`; they do not probe the owner's live port or use real Astrid/agent state. Earlier launcher validation notes below remain as native qualification context.
 
 The environment contract covers every lifecycle script, both install modes, darwin/linux/win32 shell handoffs, serve/build/status/down children, and installer-lock checks. A native child-process test runs through the shell wrapper with the contaminated fixture, verifies the actual child environment and exit status, and also exercises a nested installer shell on POSIX. Installed records retain their explicit tool environment; inherited XDG, Python, Git, package/model/browser configuration and Pinokio PATH entries are excluded. Native Windows and Linux Pinokio integration still require runner/tester qualification.
 
@@ -45,11 +45,11 @@ The optional bootstrap-source check executes the actual POSIX bootstrap supplied
 
 Sources inspected: agent `70de7d77a`, app-bootstrap `c56946787`, editor worktree `833a848c8`, pinokiod `add4a67`; Runtime foreground changes in `labs/pinokio-runtime-run`. The coordinator must combine the bootstrap/editor changes and repin agent/Runtime before testing a published ref. Production endpoints were not assumed to contain those commits.
 
-## Add to the owner's TESTING.md
+## Native qualification checklist
 
 These checks require the real Pinokio version and native operating system; the fake matrix does not establish them.
 
-1. Fresh install of each choice from production and with `ASTRID_APP_REF=feat/pinokio`. Confirm bootstrap source, manifest pins, selected branch, program root, external data root, `managed_by=pinokio`, and no login service. On Windows prove PowerShell 5.1 argument forwarding, local `-File` Bypass behavior under the host's policy, UTF-8, native exit status, paths with spaces/apostrophes/ampersands/`!`, and the explicit refusal for `%`/quotes/newlines.
+1. Fresh install of each choice from production and with an explicit `ASTRID_APP_REF` branch in a dedicated test environment. Confirm bootstrap source, manifest pins, selected branch, program root, external data root, `managed_by=pinokio`, and no login service. On Windows prove PowerShell 5.1 argument forwarding, local `-File` Bypass behavior under the host's policy, UTF-8, native exit status, paths with spaces/apostrophes/ampersands/`!`, and the explicit refusal for `%`/quotes/newlines.
 2. Hosted Start: Open is absent until the health JSON is ready; it opens `https://astrid.haus/?connect=1` in a popout. Confirm the real CORS/browser connection, permissions, projects, and agent discovery.
 3. Local Start: no door on 17340; preview listens only on 127.0.0.1:5180; proxy on 17336 works; workspace config identifies the owned Runtime; Open appears only after attach and HTTP readiness. Confirm a schema/pin mismatch fails without Open. Confirm the editor works offline after installation and astrid.haus cannot connect or trigger a permission prompt.
 4. Native Pinokio Stop and the launcher Stop menu, during startup and after readiness, in both modes: verify the direct `shell.run` on.stop hook finishes before forced tree kill. In local mode prove editor/proxy/Vite exit before installed Runtime `down`; prove Runtime shutdown/reconciliation and lifetime installer-lock release before maintenance. Separately test Pinokio quit: source `add4a67` bypasses the script hook, so direct quit remains forced; Stop before quit is required for grace. For each path, capture all Runtime, worker, supervisor, dev-local, proxy, npm and Vite PIDs first; check that none survive and 17340/5180/17336 close. Restart immediately. On Windows cover Ctrl+C, Ctrl+Break, closing the console, Pinokio Stop, application quit, ConPTY behavior, Job containment and locked-file removal. Linux needs the same native checks; the process smoke here ran on macOS.
