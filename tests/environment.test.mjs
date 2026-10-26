@@ -139,12 +139,13 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
   test(`${platform} ${mode}: every lifecycle shell and Astrid child uses the environment contract`, async () => {
     const f = fixture(platform, mode);
     let lockChecks = 0;
-    const app = { ...library.createApp({ ...f, probe: async () => ({ kind: 'free' }), lifecycle: {
+    const app = library.createApp({ ...f, probe: async () => ({ kind: 'free' }),
+      execute: (_command, _args, options) => { checkEnvironment(options.env, f); return { status: 0, stdout: library.EDITOR_REPOSITORY }; }, lifecycle: {
       requestGracefulStop: async () => {},
       waitForInstallerLock: async (root, options) => {
         await waitForInstallerLock(root, { ...options, installed: f.installed, run: async (_spec, options) => { checkEnvironment(options.env, f, true); lockChecks++; } });
       },
-    } }), validateExistingEditorCheckout: () => true };
+    } });
     for (const name of scripts) {
       if (name === 'add-local' && mode === 'local') continue;
       const factory = load(name, app);
@@ -160,7 +161,8 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
               checkEnvironment(options.env, f);
               assert.equal(options.cwd, f.environment.HOME);
               assert.ok(command.endsWith(f.win ? 'powershell.exe' : '/bash'));
-              if (!f.win) assert.ok(args.at(-1).includes('unset PWD'));
+              if (f.win) assert.ok(args.at(-1).endsWith('exit $LASTEXITCODE'));
+              else assert.ok(args.at(-1).includes('unset PWD'));
               const child = new EventEmitter(); queueMicrotask(() => child.emit('close', 0)); return child;
             },
           });

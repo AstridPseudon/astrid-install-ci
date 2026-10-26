@@ -11,7 +11,7 @@ const { buildEnvironment } = require('./environment');
 // The factory keeps platform command generation testable without executing a
 // shell, querying the real ports, or writing into a real installation.
 function createApp({ platform = process.platform, appDirectory = path.resolve(__dirname, '..'),
-  environment = process.env, filesystem = fs, probe = probeDoor, lifecycle } = {}) {
+  environment = process.env, filesystem = fs, probe = probeDoor, lifecycle, execute = spawnSync, getTemp } = {}) {
   const isWindows = platform === 'win32';
   const paths = isWindows ? path.win32 : path.posix;
   const APP_DIR = appDirectory;
@@ -108,8 +108,8 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
   function validateExistingEditorCheckout() {
     if (!filesystem.existsSync(EDITOR_DIR)) return false;
     if (!filesystem.existsSync(paths.join(EDITOR_DIR, '.git'))) throw new Error("Astrid's editor files are damaged. Choose Reset, then install again.");
-    const result = spawnSync('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], {
-      env: buildEnvironment({ appDirectory: APP_DIR, platform, environment }), encoding: 'utf8', windowsHide: true });
+    const result = execute('git', ['-C', EDITOR_DIR, 'remote', 'get-url', 'origin'], {
+      env: buildEnvironment({ appDirectory: APP_DIR, platform, environment, getTemp }), encoding: 'utf8', windowsHide: true });
     if (result.status !== 0 || result.stdout.trim().replace(/\.git$/, '').replace(/\/$/, '').toLowerCase() !== EDITOR_REPOSITORY.toLowerCase()) {
       throw new Error(`Astrid's editor folder doesn't come from ${EDITOR_REPOSITORY}. Choose Reset, then install again.`);
     }

@@ -9,7 +9,7 @@ export function runShell({ appDirectory, message, explicit = {}, platform = proc
   const env = policy.buildEnvironment({ appDirectory, platform, environment, explicit, ...options });
   const win = platform === 'win32';
   const shell = win ? path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '/bin/bash';
-  const args = win ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ErrorActionPreference = 'Stop'\n${message}`]
+  const args = win ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ErrorActionPreference = 'Stop'\n$global:LASTEXITCODE = 0\n${message}\nexit $LASTEXITCODE`]
     : ['--noprofile', '--norc', '-c', `set -eu\nunset PWD\n${message}`];
   // Nested installer shells recreate PWD. Run them outside Pinokio's home;
   // every launcher command uses absolute paths (including Git's -C).
