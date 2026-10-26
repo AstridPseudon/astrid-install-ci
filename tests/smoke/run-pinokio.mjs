@@ -74,12 +74,10 @@ function makeFfmpegGuard(binDirectory) {
   }
 }
 
-function prepareCheckout(source, mirror, appDirectory) {
-  fs.mkdirSync(path.dirname(mirror), { recursive: true });
-  execFileSync('git', ['init', '--bare', '--initial-branch=ci-smoke', mirror], { stdio: 'inherit' });
-  execFileSync('git', ['--git-dir', mirror, 'fetch', source, 'HEAD:refs/heads/ci-smoke'], { stdio: 'inherit' });
-  execFileSync('git', ['--git-dir', mirror, 'symbolic-ref', 'HEAD', 'refs/heads/ci-smoke'], { stdio: 'inherit' });
-  execFileSync('git', ['clone', '--branch', 'ci-smoke', mirror, appDirectory], { stdio: 'inherit' });
+function prepareCheckout(source, appDirectory) {
+  const branch = 'ci-smoke';
+  execFileSync('git', ['-C', source, 'checkout', '-B', branch, 'HEAD'], { stdio: 'inherit' });
+  execFileSync('git', ['clone', '--branch', branch, '--single-branch', source, appDirectory], { stdio: 'inherit' });
 }
 
 function processTreeKill(child) {
@@ -405,12 +403,11 @@ async function setup() {
   const cacheDirectory = path.join(pinokioHome, 'cache');
   const binDirectory = path.join(pinokioHome, 'bin');
   const appDirectory = path.join(apiDirectory, 'astrid-pinokio.git');
-  const mirror = path.join(pinokioHome, 'ci-launcher.git');
   fs.mkdirSync(apiDirectory, { recursive: true });
   fs.mkdirSync(cacheDirectory, { recursive: true });
   fs.mkdirSync(binDirectory, { recursive: true });
   makeFfmpegGuard(binDirectory);
-  prepareCheckout(repository, mirror, appDirectory);
+  prepareCheckout(repository, appDirectory);
 
   const environment = makeEnvironment(pinokioHome, process.platform);
   assert.ok(environment && typeof environment === 'object', 'Pinokio env fixture must return an environment object');
