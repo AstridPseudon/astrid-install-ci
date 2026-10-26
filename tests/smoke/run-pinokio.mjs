@@ -361,7 +361,9 @@ realm = Path(catalog["realms"][0]["data_root"])
 profile = json.loads(profile_path.read_text())
 with tempfile.TemporaryDirectory(prefix="astrid-render-source-") as temporary:
     clip = Path(temporary) / "clip1.mp4"
-    subprocess.run(ffmpeg_clip_argv(clip, 0, seconds=TINY_CLIP_SECONDS, size=TINY_CLIP_SIZE), check=True)
+    command = ffmpeg_clip_argv(clip, 0, seconds=TINY_CLIP_SECONDS, size=TINY_CLIP_SIZE)
+    command[0] = str(ffmpeg)
+    subprocess.run(command, check=True)
     service = RuntimeService(realm)
     try:
         project = service.create_project({"slug": "pinokio-ci", "name": "Pinokio CI"}, idempotency_key="pinokio-ci-project")
