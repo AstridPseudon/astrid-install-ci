@@ -80,8 +80,7 @@ function quoteBash(value) {
 
 function makeNodeLauncher(binDirectory) {
   if (windows) {
-    const script = `@echo off\r\n"${process.execPath}" %*\r\nexit /b %ERRORLEVEL%\r\n`;
-    fs.writeFileSync(path.join(binDirectory, 'node.cmd'), script);
+    fs.copyFileSync(process.execPath, path.join(binDirectory, 'node.exe'));
   } else {
     const script = `#!/bin/sh\nexec ${quoteBash(process.execPath)} "$@"\n`;
     fs.writeFileSync(path.join(binDirectory, 'node'), script, { mode: 0o700 });
