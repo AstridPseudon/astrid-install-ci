@@ -109,12 +109,14 @@ Do these in order.
 
 ### Test the candidate from PowerShell
 
-Use the branch's own installer and manifest. The `feat/pinokio` `public/install.ps1` reads `ASTRID_INSTALL_MANIFEST_URL`. Fetch that script from raw GitHub so this tests the candidate; `astrid.haus/install.ps1` serves the released installer.
+With Astrid installed through Pinokio, run the branch's terminal installer to confirm it refuses a second install. The `feat/pinokio` `public/install.ps1` reads `ASTRID_INSTALL_MANIFEST_URL`. Fetch it from raw GitHub so this tests the candidate; `astrid.haus/install.ps1` serves the released installer.
 
 ```powershell
 $env:ASTRID_INSTALL_MANIFEST_URL = 'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json'
 irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1 | iex
 ```
+
+It should refuse with `Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.`
 
 ### Test through Pinokio
 
@@ -177,7 +179,7 @@ The owner gives the go before release work starts. Keep this order:
 4. Right after the App release, confirm astrid.haus serves exactly that manifest with the served-manifest canary (C4).
 5. Make the Windows journey a required check in the repository ruleset.
 6. On `astrid-pinokio`, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty), remove the empty test commit `0c9913e`, delete `TESTING.md`, make `feat/pinokio` the new `main` in place of the placeholder, and set `main` as the default branch again.
-7. Import `https://github.com/banodoco/astrid-pinokio` in Pinokio. Connect GitHub under Settings → Repository access if needed, then set the project's description to **Community Beta**. The Pinokio item link will then work.
+7. Import `https://github.com/banodoco/astrid-pinokio` in Pinokio. Connect GitHub under Settings → Repository access if needed, then set the project's description to **Community Beta**. The Pinokio item link will then work. Send the tester `https://pinokio.co/item?uri=https://github.com/banodoco/astrid-pinokio`.
 8. Ask the Windows tester to confirm that the task host shows **Running**, one generation completes, and one render completes. Keep the beta label until the Windows journey is required and green. Then delete the `feat/pinokio` branches locally and on GitHub.
 
 ## 13. After the release: the beta
