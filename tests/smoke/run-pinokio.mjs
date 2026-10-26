@@ -62,7 +62,8 @@ function isWithin(candidate, parent) {
 
 function tempPath() {
   const prefix = windows ? 'a-' : 'astrid-pinokio-ci-';
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  // Native realpath expands Windows TEMP's DOS aliases (e.g. RUNNER~1).
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function makeFfmpegGuard(binDirectory) {

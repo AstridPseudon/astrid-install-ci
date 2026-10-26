@@ -10,6 +10,14 @@ CI runs for pushes to `feat/pinokio` and `main`, pull requests, manual dispatche
 
 Jobs have hang guards: 5 minutes for Unit and 15 minutes for Pinokio smoke and Fully local. The smoke harness logs START/END with elapsed seconds for each launcher action and HTTP check. Fully local curl requests have a 30-second per-request limit. Foreground commands run asynchronously so the long-lived Start process's output keeps draining; a noisy-server regression covers pipe backpressure and stdin EOF.
 
+The smoke's disposable homes use native realpath so Windows runner TEMP aliases
+such as `RUNNER~1` expand to their long names before paths reach the installer.
+Runs 40340156815 and 40343571346 failed OMP's frozen Bun install under a DOS alias;
+the Windows journey 40327893175 passed the same OMP/Bun pins under a long path.
+This normalization removes that harness difference. It does not establish the
+cause of the frozen-lockfile error; the canonical-path Windows smoke must pass
+before treating that failure as harness-only.
+
 ## Known testing gaps
 
 - Render did not settle during Pinokio smoke on macOS and Linux, so it is omitted from the required smoke flow. Revisit with the testing round.
