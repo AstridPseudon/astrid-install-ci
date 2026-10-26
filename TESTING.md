@@ -107,31 +107,43 @@ Do these in order.
 
 ## 8. Windows tester
 
-### Test the candidate from PowerShell
+### Terminal install
 
-With Astrid installed through Pinokio, run the branch's terminal installer to confirm it refuses a second install. The `feat/pinokio` `public/install.ps1` reads `ASTRID_INSTALL_MANIFEST_URL`. Fetch it from raw GitHub so this tests the candidate; `astrid.haus/install.ps1` serves the released installer.
+On a Windows machine where Astrid isn't installed through Pinokio, open PowerShell and run:
 
 ```powershell
 $env:ASTRID_INSTALL_MANIFEST_URL = 'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json'
 irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1 | iex
 ```
 
-It should refuse with `Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.`
-
-### Test through Pinokio
-
-In Pinokio on Windows, search for `https://github.com/banodoco/astrid-pinokio` or use Download from URL, then install the test branch as in section 2. Open Astrid's page and choose **Install**, then **Start**. Check that:
-
-1. The task host shows **Running**.
-2. One generation completes.
-3. One render completes.
-
-If something fails, run this in PowerShell while Astrid is installed and send the output and the doctor bundle it creates:
+This installs the candidate. If you already have a terminal install from `main`, update it in place with the candidate; you don't need to uninstall first. Run the candidate installer with `--update`:
 
 ```powershell
-$R = "$env:USERPROFILE\pinokio\api\astrid-pinokio.git\app\astrid"
-& "$R\versions\$((Get-Content -Raw "$R\current").Trim())\py\Scripts\python.exe" -I -m astrid install --doctor
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1))) --update
 ```
+
+Check that the task host shows **Running**, one generation completes, and one render completes. If anything fails, run this in PowerShell and send its output and the doctor bundle it creates. It uses the terminal install at `%LOCALAPPDATA%\Astrid`:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1))) --doctor
+```
+
+### Pinokio on Windows
+
+In Pinokio, search for `https://github.com/banodoco/astrid-pinokio` or use Download from URL, then install the test branch as in section 2. Open Astrid's page and choose **Install**, then **Start**. Check that the task host shows **Running**, one generation completes, and one render completes.
+
+If something fails, use Pinokio's home shown in Settings; it may not be `%USERPROFILE%\pinokio`. Set `$PinokioHome` to that folder, then run:
+
+```powershell
+$PinokioHome = "$env:USERPROFILE\pinokio"
+$R = Join-Path $PinokioHome 'api\astrid-pinokio.git\app\astrid'
+$V = (Get-Content -Raw "$R\current").Trim()
+& "$R\versions\$V\py\Scripts\python.exe" -I -m astrid install --doctor --root "$R"
+```
+
+### One Astrid only (optional)
+
+With Pinokio's Astrid installed, run the terminal installer above. It should refuse with `Astrid on this computer was installed with Pinokio. Use Pinokio to update or uninstall it.`
 
 ## 9. What to send back
 
