@@ -420,12 +420,14 @@ async function setup() {
   const apiDirectory = path.join(pinokioHome, 'api');
   const cacheDirectory = path.join(pinokioHome, 'cache');
   const binDirectory = path.join(pinokioHome, 'bin');
+  const guardDirectory = path.join(userHome, 'guard-bin');
   const appDirectory = path.join(apiDirectory, 'astrid-pinokio.git');
   fs.mkdirSync(apiDirectory, { recursive: true });
   fs.mkdirSync(cacheDirectory, { recursive: true });
   fs.mkdirSync(binDirectory, { recursive: true });
+  fs.mkdirSync(guardDirectory, { recursive: true });
   makeNodeLauncher(binDirectory);
-  makeFfmpegGuard(binDirectory);
+  makeFfmpegGuard(guardDirectory);
   prepareCheckout(repository, appDirectory);
 
   const environment = makeEnvironment(pinokioHome, process.platform);
@@ -443,7 +445,7 @@ async function setup() {
   }
   const key = pathKey(environment);
   const beforePath = environment[key] || '';
-  environment[key] = [binDirectory, beforePath].filter(Boolean).join(paths.delimiter);
+  environment[key] = [binDirectory, guardDirectory, beforePath].filter(Boolean).join(paths.delimiter);
   assert.equal(environment[key].split(paths.delimiter)[0], binDirectory, 'fake Pinokio bin must lead PATH');
   assert.equal(environment.ASTRID_APP_REF, undefined, 'the ref must come from the launcher _ENVIRONMENT file');
   environment.ASTRID_PINOKIO_APP_DIR = appDirectory;
