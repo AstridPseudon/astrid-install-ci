@@ -7,13 +7,14 @@ You're testing Astrid's Pinokio launcher on a clean Mac: install, start, open in
 | Repo | `feat/pinokio` head |
 |---|---|
 | banodoco/astrid-pinokio | `latest feat/pinokio` |
-| banodoco/astrid-app | `630336b3b153` |
+| banodoco/astrid-app | `489c9531b23d` |
 | banodoco/astrid-agent | `de5c62b93e58` |
 | banodoco/astrid-runtime | `67ea67d834e5` |
 
 ## 1. Before you start
 
 - A Mac that isn't your work one, ideally with no Astrid on it, and about 15 GB free. If it already has Astrid, remove it first (your projects stay): `curl -fsSL https://astrid.haus/install | sh -s -- --uninstall`
+- Fully local builds the editor on this Mac, which uses up to about 4 GB of memory for a minute or two. On an 8 GB Mac, close other heavy apps first.
 - Pinokio v8.2 or later.
 - Chrome, set as the default browser (System Settings → Desktop & Dock → Default web browser).
 - Optional: Claude Code and/or Codex, installed and signed in.
