@@ -210,10 +210,11 @@ test('installer record selects authoritative Python, data root, Node and npm; no
       [p.join(root, 'versions', 'v1', 'version.json'), JSON.stringify({ root: versionRoot, python, profile, env: { ASTRID_NODE_EXECUTABLE: node } })],
       [p.join(root, 'install.json'), JSON.stringify({ owner: 'haus.astrid.runtime', managed_by: 'pinokio', data_root: data })],
     ]);
-    const installed = installation(root, { platform, filesystem: { readFileSync: (f) => files.get(f), existsSync: () => true }, environment: { PATH: '/ambient', ASTRID_RUNTIME_DATA_ROOT: '/wrong', ASTRID_RUNTIME_CHECKOUT: '/wrong', NODE_OPTIONS: '--bad' } });
+    const installed = installation(root, { platform, filesystem: { readFileSync: (f) => files.get(f), existsSync: () => true }, environment: { PATH: '/ambient', ASTRID_RUNTIME_DATA_ROOT: '/wrong', ASTRID_RUNTIME_CHECKOUT: '/wrong', NODE_OPTIONS: '--bad', PYTHONNOUSERSITE: '1' } });
     assert.equal(installed.env.ASTRID_RUNTIME_DATA_ROOT, data);
     assert.equal(installed.env.ASTRID_RUNTIME_CHECKOUT, '');
     assert.equal(installed.env.NODE_OPTIONS, undefined);
+    assert.equal(installed.env.PYTHONNOUSERSITE, undefined);
     assert.equal(installed.env.ASTRID_RUNTIME_PYTHON, python);
     assert.equal(installed.env.ASTRID_RUNTIME_SOURCE_MANIFEST, profile);
     const c = commands(root, app.EDITOR_DIR, 'local', installed, platform);
