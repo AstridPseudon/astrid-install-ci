@@ -58,7 +58,7 @@ function isWithin(candidate, parent) {
 }
 
 function tempPath() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-pinokio-ci-'));
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-pinokio-ci-')));
 }
 
 function makeFfmpegGuard(binDirectory) {
