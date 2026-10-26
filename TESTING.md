@@ -2,14 +2,16 @@
 
 **Test branch:** `feat/pinokio` in all four repos below. Launcher: https://github.com/banodoco/astrid-pinokio/tree/feat/pinokio
 
-You're testing Astrid's Pinokio launcher on a clean Mac: install, start, open in Chrome, chat, the fully local editor, and clean-up. The launcher is on the [`feat/pinokio` branch of banodoco/astrid-pinokio](https://github.com/banodoco/astrid-pinokio/tree/feat/pinokio), and it installs Astrid and its editor from the `feat/pinokio` branches below. Get Pinokio from [desktop.pinokio.co/download.html](https://desktop.pinokio.co/download.html).
+You're testing Astrid's Pinokio launcher. On Mac, check install, start, open in Chrome, chat, the fully local editor, and clean-up. On Windows, test the candidate installer, then complete one generation and one render. The launcher is on the [`feat/pinokio` branch of banodoco/astrid-pinokio](https://github.com/banodoco/astrid-pinokio/tree/feat/pinokio), and it installs Astrid and its editor from the `feat/pinokio` branches below. Get Pinokio from [desktop.pinokio.co/download.html](https://desktop.pinokio.co/download.html).
 
 | Repo | `feat/pinokio` head |
 |---|---|
-| banodoco/astrid-pinokio | `latest feat/pinokio` |
-| banodoco/astrid-app | `489c9531b23d` |
-| banodoco/astrid-agent | `de5c62b93e58` |
-| banodoco/astrid-runtime | `67ea67d834e5` |
+| banodoco/astrid-pinokio | `d61ca1167550` |
+| banodoco/astrid-app | `93cca9cd9559` |
+| banodoco/astrid-agent | `b83d62119f0c` |
+| banodoco/astrid-runtime | `5c1977cd6b8b` |
+
+The App manifest's Runtime pin comes from the Agent's lock.
 
 ## 1. Before you start
 
@@ -17,12 +19,12 @@ You're testing Astrid's Pinokio launcher on a clean Mac: install, start, open in
 - Fully local builds the editor on this Mac, which uses up to about 4 GB of memory for a minute or two. On an 8 GB Mac, close other heavy apps first.
 - Pinokio v8.2 or later.
 - Chrome, set as the default browser (System Settings → Desktop & Dock → Default web browser).
-- Optional: Claude Code and/or Codex, installed and signed in.
+- Optional: a connected coding tool, if you want to test project chat.
 - Optional: ComfyUI, installed from Pinokio.
 
 Commands assume Pinokio's home is `~/pinokio`; if Pinokio's Settings shows another, use that. Save Pinokio's Terminal output after each action.
 
-If you installed before the environment isolation change, choose Reset, then Install again. Your Astrid state was in Pinokio's cache folder; a fresh install uses the normal OS locations.
+If you installed before today, choose **Reset**, then **Install** again, rather than Update. Astrid's state used to live inside Pinokio's cache folder and now lives in the normal per-user places. Until you've reinstalled, don't use Pinokio's Settings → **Reset server cache**.
 
 ## 2. Get the test launcher into Pinokio
 
@@ -44,11 +46,7 @@ If you installed before the environment isolation change, choose Reset, then Ins
    You should see `"install": {"managed_by": "pinokio"}` in the reply.
 5. Click the panel once. Chrome should open astrid.haus and, without you pressing Connect, show **Choose Allow in Chrome** with Chrome's prompt at the top left. Screenshot the prompt, then choose **Allow**.
 6. You should see a starter project. Open it, or create a project.
-7. In the editor's chat, pick Claude Code or Codex and ask "What's in this project?" You should get a reply. Then record:
-   ```sh
-   echo $SHELL; which claude codex
-   ls -la ~/.claude/skills ~/.codex/skills
-   ```
+7. In the editor's chat, choose a connected coding tool and ask "What's in this project?" You should get a reply. Note which tool you used and whether it replied.
 
 astrid.haus runs the production editor, so its cards keep today's wording until the release. The fully local editor has the new Pinokio wording.
 
@@ -74,7 +72,7 @@ To go back from fully local, choose Reset, then Install. Your projects stay (sec
    ```
    Then Start again.
 2. **Quit Pinokio while Astrid runs**, with the editor open. Pinokio force-stops Astrid, which is expected. Note the card the editor shows. The `lsof` line should print nothing. Reopen Pinokio and Astrid's page: Start should run by itself, and the Open panel should come back. Stop is the gentle way.
-3. **Update.** Ask Claude to push a harmless launcher commit. Then choose Stop, then **Update**. Pinokio should pull the launcher first, then update Astrid, and finish stopped. This should show the new commit:
+3. **Update.** When the owner has pushed a new test commit, choose Stop, then **Update**. Pinokio should pull the launcher first, then update Astrid, and finish stopped. This should show the new commit:
    ```sh
    git -C ~/pinokio/api/astrid-pinokio.git log -1 --oneline
    ```
@@ -109,26 +107,35 @@ Do these in order.
 
 ## 8. Windows tester
 
-Follow the same Pinokio steps in PowerShell. The Pinokio home is `%USERPROFILE%\pinokio`.
+### Test the candidate from PowerShell
 
-- Health (type `curl.exe`, not `curl`): `curl.exe -s -H "Origin: https://astrid.haus" http://127.0.0.1:17340/api/runtime/v1/health`
-- One Astrid only:
-  ```powershell
-  $env:ASTRID_INSTALL_MANIFEST_URL = 'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json'
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1)))
-  ```
-- Unproven on Windows, so watch these closely. After Stop, and after closing Pinokio's console window, `Get-NetTCPConnection -State Listen -LocalPort 17340,5180` should find nothing. Reset and Uninstall may hit locked files, so send any `Remaining:` lines.
-- Doctor bundle:
-  ```powershell
-  $R = "$env:USERPROFILE\pinokio\api\astrid-pinokio.git\app\astrid"
-  & "$R\versions\$((Get-Content -Raw "$R\current").Trim())\py\Scripts\python.exe" -I -m astrid install --doctor
-  ```
+Use the branch's own installer and manifest. The `feat/pinokio` `public/install.ps1` reads `ASTRID_INSTALL_MANIFEST_URL`. Fetch that script from raw GitHub so this tests the candidate; `astrid.haus/install.ps1` serves the released installer.
+
+```powershell
+$env:ASTRID_INSTALL_MANIFEST_URL = 'https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install-manifest.json'
+irm https://raw.githubusercontent.com/banodoco/astrid-app/feat/pinokio/public/install.ps1 | iex
+```
+
+### Test through Pinokio
+
+In Pinokio on Windows, search for `https://github.com/banodoco/astrid-pinokio` or use Download from URL, then install the test branch as in section 2. Open Astrid's page and choose **Install**, then **Start**. Check that:
+
+1. The task host shows **Running**.
+2. One generation completes.
+3. One render completes.
+
+If something fails, run this in PowerShell while Astrid is installed and send the output and the doctor bundle it creates:
+
+```powershell
+$R = "$env:USERPROFILE\pinokio\api\astrid-pinokio.git\app\astrid"
+& "$R\versions\$((Get-Content -Raw "$R\current").Trim())\py\Scripts\python.exe" -I -m astrid install --doctor
+```
 
 ## 9. What to send back
 
 - Pinokio's Terminal output for each action, plus any `install.log` that an error names after `Details:`.
 - Screenshots of Chrome's prompt and of anything confusing.
-- Your notes: macOS and Pinokio versions, the `$SHELL`, `which` and skills output, and the cards you noted.
+- Your notes: operating system and Pinokio versions, and the cards you noted.
 - The doctor bundle, made while Astrid is installed:
   ```sh
   R="$HOME/pinokio/api/astrid-pinokio.git/app/astrid"
@@ -139,9 +146,9 @@ Follow the same Pinokio steps in PowerShell. The Pinokio home is `%USERPROFILE%\
 ## 10. When something's wrong: the fix loop
 
 1. Stop at that step. Note the step number, what you expected and what you saw, with the Terminal output and a screenshot. For an install or start problem, add the doctor bundle.
-2. Send it to Claude in your session on your main Mac. Batch small wording things, and send a broken step straight away.
-3. Claude finds why it was possible (the cause, not just this case) and fixes it on the same `feat/pinokio` branches, never `main`. Claude runs the tests and pushes new commits, re-pinning the App branch's install manifest when Astrid itself changed. The reply says what changed and which step to redo.
-4. On the test Mac, choose Stop, then **Update**. In test mode, Update:
+2. Send the report to the owner. Send a broken step straight away; small wording notes can be batched.
+3. The owner will investigate the cause, make and check a fix on the test branches, and tell you which step to redo.
+4. On the test machine, choose Stop, then **Update**. In test mode, Update:
    - pulls the launcher;
    - after Install: downloads the installer and its manifest from astrid-app's `feat/pinokio` branch, and installs the versions that manifest pins;
    - in fully local: pulls the editor's `feat/pinokio` branch, installs the versions its manifest pins, and rebuilds the editor.
@@ -152,30 +159,28 @@ Follow the same Pinokio steps in PowerShell. The Pinokio home is `%USERPROFILE%\
 
 **Optimizing.** Time these: Install, Switch to fully local, Start until the Open panel appears, and the first Open until it's connected. A slow step is worth fixing even when it works. Send the timings with your notes. There are no target numbers.
 
-## 11. What guides the fixes
+## 11. Known gaps
 
-- Plain words, and every dead end says what to do next.
-- One obvious path, with no hidden modes, extra settings or flags.
-- Pinokio stays a quiet option on astrid.haus, never a prominent one.
-- Fix the cause and the whole class, and ask why it was possible.
-- Keep the full ambition and make the how simpler. Handle real use, refuse rare edge cases cleanly, and ship soon.
-- Tests prove behaviour, not timing, and nothing is skipped silently.
-- Everything stays on `feat/pinokio` until the release. After it, every branch is merged or deleted.
+These are deferred to a testing round soon:
+
+- The smoke's render step.
+- Fully local in CI.
+- Main's pre-existing red checks.
 
 ## 12. After you're happy: the release
 
-In this order:
+The owner gives the go before release work starts. Keep this order:
 
-1. Fast-forward astrid-runtime `feat/pinokio` → `main`, then astrid-agent `feat/pinokio` → `main`. If a `main` has moved, rebase and re-pin the App's install manifest to the new heads.
-2. Merge astrid-app `feat/pinokio` → `main`. This deploys astrid.haus, with production installer support for Pinokio and the quiet "Or install with Pinokio" links.
-3. Straight after: on astrid-pinokio, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty), drop the empty test commit `0c9913e`, and delete TESTING.md, make `feat/pinokio` the new `main` (replacing the placeholder), and set `main` as the default branch again.
-4. In Pinokio, signed in: pinokio.co → Settings → Repository access → connect GitHub and grant `banodoco` (this needs an org Owner). Paste `https://github.com/banodoco/astrid-pinokio` into Pinokio's search to import it. Open **Manage this project** and set the description to "Community Beta". From now on, the pinokio.co/item link works.
-5. Send the Windows tester https://pinokio.co/item?uri=https://github.com/banodoco/astrid-pinokio and post in #testers-wanted.
-6. Delete the `feat/pinokio` branches, locally and on GitHub.
-
-Claude does steps 1–3 and 6 when you say "go". Step 4 needs you.
+1. Confirm the minimal pin coherence check (C1) is in place before release.
+2. Fast-forward `astrid-runtime` `feat/pinokio` to `main`, then `astrid-agent` `feat/pinokio` to `main`. Both must contain the combined line. If either `main` has moved, rebase and re-pin the App manifest to the new heads.
+3. Merge `astrid-app` `feat/pinokio` to `main`. This deploys astrid.haus; its manifest pins the new App head and takes Runtime from the Agent's lock.
+4. Right after the App release, confirm astrid.haus serves exactly that manifest with the served-manifest canary (C4).
+5. Make the Windows journey a required check in the repository ruleset.
+6. On `astrid-pinokio`, revert the TEST ONLY commits `44c0969` and `e362bf4` (after the revert, `ASTRID_APP_REF` is empty), remove the empty test commit `0c9913e`, delete `TESTING.md`, make `feat/pinokio` the new `main` in place of the placeholder, and set `main` as the default branch again.
+7. Import `https://github.com/banodoco/astrid-pinokio` in Pinokio. Connect GitHub under Settings → Repository access if needed, then set the project's description to **Community Beta**. The Pinokio item link will then work.
+8. Ask the Windows tester to confirm that the task host shows **Running**, one generation completes, and one render completes. Keep the beta label until the Windows journey is required and green. Then delete the `feat/pinokio` branches locally and on GitHub.
 
 ## 13. After the release: the beta
 
-- Reports from the Windows tester and others, as GitHub issues on banodoco/astrid-pinokio or sent to Claude, go through the same loop. Fixes go to `main` through short branches.
+- Reports from testers, as GitHub issues on banodoco/astrid-pinokio or sent to the owner, go through the same loop. Fixes go to `main` through short branches.
 - Pinokio users get launcher fixes and new Astrid versions with Stop, then Update. Fixes inside Astrid reach them once astrid.haus's install manifest pins the new versions.
