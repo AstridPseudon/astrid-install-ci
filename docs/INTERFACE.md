@@ -154,8 +154,6 @@ A Stop before Runtime readiness has no validated Runtime identity to down: it TE
 
 The control request has a 45-second deadline. The down command is killed if its 25-second budget expires. A failed down or hung editor leaves remaining owned processes for Pinokio's final tree kill. The hook finishes even after graceful failure so forced cleanup can proceed.
 
-Update and Switch to fully local first run `pinokio/backup-preflight.py` with the validated installed Python, `-I -B`, and a 30-second subprocess limit. It compares `install.json` with the installer's per-user selection record, then walks only the selected support root without following links, applying the installed `Backend._backup_ignored(..., support=True)` policy. A mismatched selection, linked entry admitted by that policy, missing policy, unreadable tree, or invalid install record refuses before Start is stopped or Git is pulled. The selected realm is outside this early check; the installer's existing backup guard remains authoritative during the transaction.
-
 The Stop menu, Update, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) all call the same `stopOwnedStart` function:
 
 1. If this Start script is active, request graceful shutdown directly and retain its result. This is necessary because Pinokio's direct-method hook dispatch logs failures but does not propagate them to `api.stop`'s caller.

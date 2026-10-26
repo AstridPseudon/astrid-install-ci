@@ -58,10 +58,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
           const shells = script.run.filter((step) => step.method === 'shell.run');
           assert.deepEqual(plain(shells.map((step) => step.params.message)), map[name], name);
           for (const step of shells) assert.equal(step.params.shell, platform === 'win32' ? 'powershell.exe' : 'bash');
-          if (['update', 'add-local'].includes(name)) {
-            assert.equal(script.run[0].method, app.preflightBackup);
-            assert.equal(script.run[1].method, app.stopOwnedStart);
-          } else if (['uninstall', 'reset', 'stop'].includes(name)) assert.equal(script.run[0].method, app.stopOwnedStart);
+          if (['update', 'add-local', 'uninstall', 'reset', 'stop'].includes(name)) assert.equal(script.run[0].method, app.stopOwnedStart);
           if (name === 'start') {
             assert.equal(script.daemon, true);
             assert.deepEqual(plain(script.on.stop), plain(app.stopHook()));
@@ -142,8 +139,7 @@ test('Update pulls the launcher after the stop and lock check and fails before A
   for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
     const app = fakeApp(platform, 'feat/pinokio', mode);
     const script = await load('pinokio/update.js', app)({}, {});
-    const [preflight, stop, pull, portCheck] = script.run;
-    assert.equal(preflight.method, app.preflightBackup);
+    const [stop, pull, portCheck] = script.run;
     assert.equal(stop.method, app.stopOwnedStart);
     assert.equal(pull.method, 'shell.run');
     assert.equal(pull.params.path, app.APP_DIR);
@@ -153,7 +149,7 @@ test('Update pulls the launcher after the stop and lock check and fails before A
     assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
     assert.equal(portCheck.method, app.ensureDoorPortFree);
     const astridUpdate = script.run.findIndex((step) => step.method === 'shell.run' && step.params.message.includes('--update'));
-    assert.ok(astridUpdate > 3, `Astrid update follows the launcher pull (${platform}, ${mode})`);
+    assert.ok(astridUpdate > 2, `Astrid update follows the launcher pull (${platform}, ${mode})`);
   }
   assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");
 });
@@ -386,7 +382,7 @@ test('maintenance never mutates after failed grace, forced stop or held installe
         requestGracefulStop: async () => { log.push('grace'); if (reason === 'grace') throw new Error('grace failed'); },
         waitForInstallerLock: async () => { log.push('lock'); if (reason === 'lock') throw new Error('Astrid is still running. Stop it in Pinokio, then try again.'); },
       },
-    }), validateExistingEditorCheckout: () => false, preflightBackup: async () => {} };
+    }), validateExistingEditorCheckout: () => false };
     for (const name of ['update', 'reset', 'uninstall', 'uninstall-delete-data', 'add-local']) {
       log.length = 0;
       const module = await load(`pinokio/${name}.js`, app)({}, {});
