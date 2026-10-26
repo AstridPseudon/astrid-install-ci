@@ -69,18 +69,18 @@ Shell commands resolve the pointer at execution time, after install/update. POSI
 | Local Runtime, including temporary build | `R/run --hosted-origin off` | `cmd.exe /d /s /c ""R\run.cmd" --hosted-origin off"` |
 | Graceful Runtime stop | `<record.python> -I -m astrid_runtime down --profile astrid --data-root <recorded-data-root> --source-manifest <record.profile> --json` | Same argument array |
 | Runtime readiness/status | `<record.python> -I -m astrid_runtime status --data-root <recorded-data-root> --json` | Same argument array |
-| Editor dependencies | `<Node> <npm-cli.js> ci --no-audit --no-fund` | Same argument array |
+| Editor dependencies | `<Node> <npx-cli.js> -y npm@11 ci --no-audit --no-fund` | Same argument array |
 | Editor build | `<Node> scripts/dev-local-workspace.mjs --build` | Same argument array |
 | Editor serve | `<Node> scripts/dev-local-workspace.mjs --preview --preview-dir E/dist` | Same argument array |
 
 Windows batch invocation uses `windowsVerbatimArguments: true`. Install paths containing `%`, double quotes or newlines are refused to avoid cmd expansion/quoting errors. Spaces, apostrophes, ampersands and `!` are supported by the command construction and still require native qualification.
 
-`npm-cli.js` is located from the authoritative Node:
+`npm-cli.js` and sibling `npx-cli.js` are located from the authoritative Node:
 
 - POSIX: `dirname(Node)/../lib/node_modules/npm/bin/npm-cli.js`.
 - Windows: `dirname(Node)/node_modules/npm/bin/npm-cli.js`.
 
-Node's directory is added to PATH for package scripts. `npm_execpath` and `npm_node_execpath` identify these pinned tools, including the editor wrapper's own npm/npx invocations. No unpacked POSIX npm/npx symlink is required.
+The dependency step invokes the installed Node's `npx-cli.js` and requests npm 11, matching the app README. Node's directory is added to PATH for package scripts. `npm_execpath` and `npm_node_execpath` identify the bundled pinned npm and Node for package scripts. No unpacked POSIX npm/npx symlink is required.
 
 The editor gets the installed version's environment plus explicit `ASTRID_RUNTIME_PYTHON=<record.python>`, `ASTRID_RUNTIME_SOURCE_MANIFEST=<record.profile>`, `ASTRID_RUNTIME_DATA_ROOT=<install.data_root>`, `ASTRID_SUPPORT_ROOT` and `ASTRID_WORKSPACE_DISCOVERY=<data>/runtime/discovery.json`. Ambient checkout selection, Python imports, Node options, endpoint and credential overrides are cleared. `PORT=5180`, `VITE_ASTRID_DYNAMIC_PROXY_PORT=17336`, `ASTRID_RUNTIME_DOOR_PORT=17340` and `ASTRID_INSTALL_MANAGED_BY=pinokio` are fixed.
 

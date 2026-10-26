@@ -26,7 +26,8 @@ export function installation(root, { platform = process.platform, filesystem = f
   const npm = platform === 'win32'
     ? p.join(p.dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js')
     : p.resolve(p.dirname(node), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  for (const file of [node, npm, record.python, record.profile]) {
+  const npx = p.join(p.dirname(npm), 'npx-cli.js');
+  for (const file of [node, npm, npx, record.python, record.profile]) {
     if (!filesystem.existsSync(file)) throw new Error(`Astrid installed file is missing: ${file}`);
   }
   const env = { ...environment, ...record.env };
@@ -49,7 +50,7 @@ export function installation(root, { platform = process.platform, filesystem = f
   const previousPath = env[pathKey] || '';
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
   env[pathKey] = `${p.dirname(node)}${platform === 'win32' ? ';' : ':'}${previousPath}`;
-  return { node, npm, python: record.python, profile: record.profile, data: install.data_root, env };
+  return { node, npm, npx, python: record.python, profile: record.profile, data: install.data_root, env };
 }
 
 export function commands(root, editor, mode, installed, platform = process.platform) {
@@ -66,7 +67,7 @@ export function commands(root, editor, mode, installed, platform = process.platf
     runtime,
     down: { command: installed.python, args: ['-I', '-m', 'astrid_runtime', 'down', '--profile', 'astrid', '--data-root', installed.data, '--source-manifest', installed.profile, '--json'] },
     status: { command: installed.python, args: ['-I', '-m', 'astrid_runtime', 'status', '--data-root', installed.data, '--json'] },
-    dependencies: { command: installed.node, args: [installed.npm, 'ci', '--no-audit', '--no-fund'] },
+    dependencies: { command: installed.node, args: [installed.npx, '-y', 'npm@11', 'ci', '--no-audit', '--no-fund'] },
     build: { command: installed.node, args: ['scripts/dev-local-workspace.mjs', '--build'] },
     preview: { command: installed.node, args: ['scripts/dev-local-workspace.mjs', '--preview', '--preview-dir', p.join(editor, 'dist')] },
   };

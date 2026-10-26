@@ -217,7 +217,7 @@ test('installer record selects authoritative Python, data root, Node and npm; no
     assert.equal(installed.env.ASTRID_RUNTIME_PYTHON, python);
     assert.equal(installed.env.ASTRID_RUNTIME_SOURCE_MANIFEST, profile);
     const c = commands(root, app.EDITOR_DIR, 'local', installed, platform);
-    assert.deepEqual(c.dependencies, { command: node, args: [installed.npm, 'ci', '--no-audit', '--no-fund'] });
+    assert.deepEqual(c.dependencies, { command: node, args: [installed.npx, '-y', 'npm@11', 'ci', '--no-audit', '--no-fund'] });
     assert.deepEqual(c.build, { command: node, args: ['scripts/dev-local-workspace.mjs', '--build'] });
     assert.deepEqual(c.preview, { command: node, args: ['scripts/dev-local-workspace.mjs', '--preview', '--preview-dir', p.join(app.EDITOR_DIR, 'dist')] });
     assert.deepEqual(c.status, { command: python, args: ['-I', '-m', 'astrid_runtime', 'status', '--data-root', data, '--json'] });
@@ -233,7 +233,7 @@ function sessionHarness({ platform = 'darwin', buildCode = 0, dependencyCode = 0
   let pid = 5000;
   let statusCount = 0;
   const active = new Map();
-  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: {} };
+  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', npx: '/pinned/npx-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: {} };
   function close(child, code = 0) { active.delete(child.pid); child.emit('close', code, null); }
   function spawnProcess(command, args, options) {
     const child = new EventEmitter(); child.pid = ++pid; child.stdout = new EventEmitter(); child.stderr = new EventEmitter();

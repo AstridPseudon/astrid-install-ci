@@ -62,9 +62,10 @@ test('real POSIX fake Runtime/build processes leave no live descendants after su
       const python = path.join(temp, 'fake-python');
       writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const healthy=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){if(healthy)process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=healthy?0:1;}\n`);
       const npm = path.join(temp, 'npm-cli.cjs'); fs.writeFileSync(npm, 'process.exit(0)');
+      const npx = path.join(temp, 'npx-cli.cjs'); fs.writeFileSync(npx, 'process.exit(0)');
       fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';import {spawn} from 'node:child_process';\nconst child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.env.GRANDCHILD_FILE,String(child.pid));\n${outcome === 'success' ? 'child.kill();process.exit(0);' : outcome === 'failure' ? 'process.exit(9);' : 'setInterval(()=>{},1000);'}\n`);
       const pidFile = path.join(temp, 'runtime.pid'); const grandchildFile = path.join(temp, 'grandchild.pid');
-      const installed = { node: process.execPath, npm, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env: { ...process.env, PID_FILE: pidFile, GRANDCHILD_FILE: grandchildFile } };
+      const installed = { node: process.execPath, npm, npx, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env: { ...process.env, PID_FILE: pidFile, GRANDCHILD_FILE: grandchildFile } };
       const pending = runSession({ action: 'build', root, editor, mode: 'local', installed, signals, pause, startupDeadlineMs: Infinity,
         spawnProcess: (...args) => { const child = spawn(...args); children.add(child); child.once('close', () => children.delete(child)); return child; },
       });
