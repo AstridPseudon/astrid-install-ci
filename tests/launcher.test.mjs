@@ -17,6 +17,12 @@ function load(file, app) {
   return module.exports;
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
+function shellMessage(step, platform) {
+  if (platform !== 'win32') return step.params.message;
+  const payload = step.params.message.match(/--pinokio-payload=([A-Za-z0-9+/=]+)/)?.[1];
+  assert.ok(payload, 'Windows shell step must carry its encoded Pinokio payload');
+  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8')).message;
+}
 function fakeApp(platform, ref = '', mode = 'backend') {
   const base = platform === 'win32'
     ? "C:\\Users\\Test Home\\pinokio\\api\\Astrid O'Malley"
@@ -145,12 +151,13 @@ test('Update pulls the launcher after the stop and lock check and fails before A
     assert.equal(stop.method, app.stopOwnedStart);
     assert.equal(pull.method, 'shell.run');
     assert.equal(pull.params.path, app.APP_DIR);
-    assert.match(pull.params.message, /pull --ff-only/);
-    assert.match(pull.params.message, /update the Pinokio launcher\./);
-    assert.match(pull.params.message, /undo those edits, then choose Update again\./);
+    const pullMessage = shellMessage(pull, platform);
+    assert.match(pullMessage, /pull --ff-only/);
+    assert.match(pullMessage, /update the Pinokio launcher\./);
+    assert.match(pullMessage, /undo those edits, then choose Update again\./);
     assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
     assert.equal(portCheck.method, app.ensureDoorPortFree);
-    const astridUpdate = script.run.findIndex((step) => step.method === 'shell.run' && step.params.message.includes('--update'));
+    const astridUpdate = script.run.findIndex((step) => step.method === 'shell.run' && shellMessage(step, platform).includes('--update'));
     assert.ok(astridUpdate > 2, `Astrid update follows the launcher pull (${platform}, ${mode})`);
   }
   assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");

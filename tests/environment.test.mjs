@@ -27,7 +27,7 @@ function load(name, app) {
 function wrapperArguments(message, win) {
   let i = message.indexOf('node ') + 5;
   const args = [];
-  while (args.length < 4) {
+  while (args.length < (win ? 2 : 4)) {
     while (/\s/.test(message[i])) i++;
     let value = '', quoted = false;
     while (i < message.length) {
@@ -40,6 +40,12 @@ function wrapperArguments(message, win) {
       else value += char;
     }
     args.push(value);
+  }
+  if (win) {
+    const prefix = '--pinokio-payload=';
+    assert.ok(args[1].startsWith(prefix));
+    const payload = JSON.parse(Buffer.from(args[1].slice(prefix.length), 'base64').toString('utf8'));
+    return [args[0], payload.appDirectory, payload.message, JSON.stringify(payload.explicit)];
   }
   return args;
 }

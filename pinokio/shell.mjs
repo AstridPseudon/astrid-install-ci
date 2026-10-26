@@ -21,7 +21,13 @@ export function runShell({ appDirectory, message, explicit = {}, platform = proc
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [appDirectory, message, explicit] = process.argv.slice(2);
-  try { process.exitCode = await runShell({ appDirectory, message, explicit: JSON.parse(explicit) }); }
+  const [argument, message, explicit] = process.argv.slice(2);
+  try {
+    const prefix = '--pinokio-payload=';
+    const options = argument?.startsWith(prefix)
+      ? JSON.parse(Buffer.from(argument.slice(prefix.length), 'base64').toString('utf8'))
+      : { appDirectory: argument, message, explicit: JSON.parse(explicit) };
+    process.exitCode = await runShell(options);
+  }
   catch (error) { console.error(`Astrid: ${error.message}`); process.exitCode = 1; }
 }

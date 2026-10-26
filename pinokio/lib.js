@@ -57,7 +57,10 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     // a dedicated failure event so the next step (especially local.set/save)
     // cannot run after a failed command. Split the marker in source to avoid
     // matching the terminal's echo of the submitted command itself.
-    const command = `node ${[paths.join(APP_DIR, 'pinokio', 'shell.mjs'), APP_DIR, message, JSON.stringify(env || {})].map(q).join(' ')}`;
+    const helper = paths.join(APP_DIR, 'pinokio', 'shell.mjs');
+    const command = isWindows
+      ? `node ${q(helper)} ${q(`--pinokio-payload=${Buffer.from(JSON.stringify({ appDirectory: APP_DIR, message, explicit: env || {} })).toString('base64')}`)}`
+      : `node ${[helper, APP_DIR, message, JSON.stringify(env || {})].map(q).join(' ')}`;
     const wrapped = isWindows
       ? `& {\n$ErrorActionPreference = 'Stop'\ntry {\n${command}\nif ($LASTEXITCODE -ne 0) { throw 'Astrid process failed.' }\n} catch {\nWrite-Output ('ASTRID_PINOKIO_' + 'FAILURE')\nthrow\n}\n}`
       : `${command}\nstatus=$?\nif [ "$status" -ne 0 ]; then printf 'ASTRID_PINOKIO_%s\\n' FAILURE; fi\n(exit "$status")`;
