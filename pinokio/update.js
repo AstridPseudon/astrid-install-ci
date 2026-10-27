@@ -4,6 +4,7 @@ module.exports = async () => {
   const mode = app.readInstallMode();
   if (!mode) throw new Error("Astrid isn't fully installed. Choose Reset, then install again.");
   if (mode === 'backend') return { run: [
+    app.customStep(app.preflightStop),
     app.gitShellStep(app.launcherPullMessage()),
     app.shellStep(app.bootstrapScript('update-app')),
   ] };

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { bounded, CONTROL_FILE, createController, requestGracefulStop, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
+import { bounded, CONTROL_FILE, createController, preflightStop, requestGracefulStop, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
 
 const helper = path.resolve(import.meta.dirname, '../pinokio/installer-lock.py');
 test('native hook control is authenticated, awaited and removes its record', async () => {
@@ -46,6 +46,59 @@ test('controller failures and deadlines are reported without unbounded test wait
     }), /down failed/);
     assert.equal(requested, true);
   }
+});
+
+test('final Runtime down preserves structured busy details through the controller', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-structured-stop-'));
+  let controller;
+  const details = { task_count: 1, blockers: [{ task_id: 'task-7', kind: 'render', state: 'running' }] };
+  try {
+    controller = await createController(root, async () => ({ ok: false,
+      errors: ['Astrid is busy (1 tasks running). Try again when they finish.'], details }));
+    await assert.rejects(requestGracefulStop(root), (error) => {
+      assert.equal(error.message, 'Astrid is busy (1 tasks running). Try again when they finish.');
+      assert.deepEqual(error.details, details);
+      return true;
+    });
+  } finally { await controller?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('runCommand keeps Runtime CLI JSON message and details on fenced-down refusal', async () => {
+  const details = { blockers: [{ task_id: 'task-8', state: 'cancel_requested' }] };
+  const payload = JSON.stringify({ ok: false, error: { message: 'Astrid is busy (1 tasks running). Try again when they finish.', details } });
+  await assert.rejects(runCommand({ command: '/pinned/python', args: ['-I', '-m', 'astrid_runtime', 'down'] }, {
+    execute: (_command, _args, _options, done) => done(Object.assign(new Error('exit 2'), { code: 2 }), '', payload),
+  }), (error) => {
+    assert.equal(error.message, 'Astrid is busy (1 tasks running). Try again when they finish.');
+    assert.deepEqual(error.details, details);
+    return true;
+  });
+});
+
+test('Runtime preflight invokes the installed read-only API and preserves structured refusal details', async () => {
+  const installed = { python: '/pinned/python', data: '/selected data', env: { PINNED: 'yes' } };
+  let invoked;
+  const report = { safe: true, blockers: [] };
+  assert.deepEqual(await preflightStop(installed, { run: async (spec, options) => {
+    invoked = { spec, options };
+    return JSON.stringify(report);
+  } }), report);
+  assert.equal(invoked.spec.command, installed.python);
+  assert.deepEqual(invoked.spec.args.slice(0, 2), ['-I', '-c']);
+  assert.match(invoked.spec.args[2], /preflight_stop\(RuntimePaths\.current\(data_root=Path\(sys\.argv\[1\]\)\)\)/);
+  assert.equal(invoked.spec.args[3], installed.data);
+  assert.equal(invoked.options.cwd, installed.data);
+  assert.equal(invoked.options.env, installed.env);
+  assert.equal(invoked.options.timeoutMs, 25_000);
+
+  const details = { safe: false, task_count: 1, blockers: [{ task_id: 'task-1', state: 'running' }] };
+  await assert.rejects(preflightStop(installed, { run: async () => {
+    throw new Error(`Command failed: ${JSON.stringify({ message: 'Astrid is busy (1 tasks running). Try again when they finish.', details })}`);
+  } }), (error) => {
+    assert.equal(error.message, 'Astrid is busy (1 tasks running). Try again when they finish.');
+    assert.deepEqual(error.details, details);
+    return true;
+  });
 });
 
 test('lock verifier uses installed Python, a bounded wait and fails closed for incomplete installs', async () => {

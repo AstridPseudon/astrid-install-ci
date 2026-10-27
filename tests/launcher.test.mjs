@@ -35,7 +35,7 @@ function fakeApp(platform, ref = '', mode = 'backend') {
     },
     existsSync: () => false, mkdirSync() {}, writeFileSync(file, content) { writes.push({ file, content }); }, rmSync() {},
   };
-  return { ...library.createApp({ platform, appDirectory: base, environment: { ASTRID_APP_REF: ref }, filesystem, lifecycle: { requestGracefulStop: async () => {}, waitForInstallerLock: async () => {} }, probe: async () => ({ kind: 'free' }) }),
+  return { ...library.createApp({ platform, appDirectory: base, environment: { ASTRID_APP_REF: ref }, filesystem, lifecycle: { preflightStop: async () => ({ safe: true }), requestGracefulStop: async () => {}, waitForInstallerLock: async () => {} }, probe: async () => ({ kind: 'free' }) }),
     validateExistingEditorCheckout: () => true, writes };
 }
 const scripts = ['install', 'install-local', 'add-local', 'update', 'start', 'stop', 'reset', 'uninstall', 'uninstall-delete-data'];
@@ -66,7 +66,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
           const shells = script.run.filter((step) => step.method === 'shell.run');
           assert.deepEqual(plain(shells.map((step) => step.params.message)), map[name], name);
           for (const step of shells) assert.equal(step.params.shell, platform === 'win32' ? 'powershell.exe' : 'bash');
-          if (['add-local', 'uninstall', 'reset', 'stop'].includes(name) || (name === 'update' && mode === 'local')) assert.equal(script.run[0].method, app.stopOwnedStart);
+          if (['install-local', 'add-local', 'uninstall', 'reset', 'stop'].includes(name) || (name === 'update' && mode === 'local')) assert.equal(script.run[0].method, app.stopOwnedStart);
           if (name === 'start') {
             assert.equal(script.daemon, true);
             assert.deepEqual(plain(script.on.stop), plain(app.stopHook()));
@@ -147,12 +147,14 @@ test('Update delegates hosted lifecycle to one app updater and retains full loca
   for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
     const app = fakeApp(platform, 'feat/pinokio', mode);
     const script = await load('pinokio/update.js', app)({}, {});
-    const [stop, pull, portCheck] = mode === 'local' ? script.run : [null, script.run[0], null];
+    const [stop, pull, portCheck] = mode === 'local' ? script.run : [null, script.run[1], null];
     if (mode === 'local') assert.equal(stop.method, app.stopOwnedStart);
     else {
-      assert.equal(script.run.length, 2);
-      assert.ok(script.run.every((step) => step.method === 'shell.run'));
-      assert.match(shellMessage(script.run[1], platform), /--update-app/);
+      assert.equal(script.run.length, 3);
+      assert.equal(script.run[0].method, app.preflightStop);
+      assert.equal(script.run[1].method, 'shell.run');
+      assert.equal(script.run[2].method, 'shell.run');
+      assert.match(shellMessage(script.run[2], platform), /--update-app/);
     }
     assert.equal(pull.method, 'shell.run');
     assert.equal(pull.params.path, app.APP_DIR);
@@ -166,6 +168,94 @@ test('Update delegates hosted lifecycle to one app updater and retains full loca
     assert.ok(astridUpdate > (mode === 'local' ? 2 : 0), `Astrid update follows the launcher pull (${platform}, ${mode})`);
   }
   assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");
+});
+
+test('hosted Update refuses at read-only preflight before the launcher pull', async () => {
+  const base = fakeApp('linux', '', 'backend');
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => { if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'backend' }); throw new Error('absent'); }, existsSync: () => false },
+    lifecycle: { preflightStop: async () => { throw new Error('Astrid is busy (1 tasks running). Try again when they finish.'); },
+      waitForInstallerLock: async () => {} } });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  const executed = [];
+  await assert.rejects(async () => {
+    for (const step of script.run) {
+      if (typeof step.method === 'function') await step.method({}, () => {});
+      else executed.push(step);
+    }
+  }, /Astrid is busy \(1 tasks running\)/);
+  assert.deepEqual(executed, []);
+  assert.equal(script.run[0].method, app.preflightStop);
+  assert.equal(script.run[1].method, 'shell.run');
+});
+
+test('local Update runs the same refusal gate before editor pull and installer mutation', async () => {
+  const base = fakeApp('linux', '', 'local');
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => { if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' }); throw new Error('absent'); }, existsSync: () => false },
+    lifecycle: { preflightStop: async () => { throw new Error('Astrid is busy (1 tasks running). Try again when they finish.'); } } });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  const executed = [];
+  await assert.rejects(async () => {
+    for (const step of script.run) {
+      if (typeof step.method === 'function') await step.method({}, () => {}, { api: {
+        running: { [app.paths.join(app.APP_DIR, 'pinokio', 'start.js')]: true },
+        stop: async () => assert.fail('busy Update must not close the Start tree'),
+      } });
+      else executed.push(step);
+    }
+  }, /Astrid is busy \(1 tasks running\)/);
+  assert.deepEqual(executed, []);
+  assert.equal(script.run[0].method, app.stopOwnedStart);
+});
+
+test('Stop and every maintenance caller preserve busy and unknown failures before mutation', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local'])
+    for (const stage of ['preflight', 'controller']) for (const reason of ['busy', 'transport', 'timeout', 'generic']) {
+    for (const name of ['stop', 'update', 'install-local', 'reset', 'uninstall', 'uninstall-delete-data', ...(mode === 'backend' ? ['add-local'] : [])]) {
+      // Hosted Update's final fence is inside the existing Python app updater.
+      if (mode === 'backend' && name === 'update' && stage === 'controller') continue;
+      const base = fakeApp(platform, '', mode);
+      const calls = [];
+      const message = reason === 'busy' ? 'Astrid is busy (1 tasks running). Try again when they finish.\ntask-caller [render; running; age 4s]'
+        : reason === 'transport' ? 'Controller transport failed.' : reason === 'timeout' ? 'Runtime stop timed out.' : 'Runtime stop failed.';
+      const fail = () => {
+        const error = new Error(message);
+        if (reason === 'busy') error.details = { task_count: 1, blockers: [{ task_id: 'task-caller' }] };
+        throw error;
+      };
+      const app = library.createApp({ platform, appDirectory: base.APP_DIR, environment: {},
+        filesystem: {
+          existsSync: () => true,
+          readFileSync: (file) => JSON.stringify(file.endsWith('install-mode.json') ? { schema_version: 1, mode } : { schema: 1, pid: 123, port: 1234 }),
+          rmSync: () => calls.push('remove'), writeFileSync: () => calls.push('write'), mkdirSync: () => calls.push('mkdir'),
+        },
+        lifecycle: {
+          preflightStop: async () => { calls.push('preflight'); if (stage === 'preflight') fail(); return { safe: true }; },
+          requestGracefulStop: async () => { calls.push('controller'); fail(); },
+          waitForInstallerLock: async () => calls.push('lock'),
+        },
+      });
+      app.validateExistingEditorCheckout = () => true;
+      const module = load(`pinokio/${name}.js`, app);
+      const script = typeof module === 'function' ? await module({}, {}) : module;
+      const kernel = { api: { running: { [app.paths.join(app.APP_DIR, 'pinokio', 'start.js')]: true },
+        stop: async () => calls.push('kernel-stop') } };
+      await assert.rejects(async () => {
+        for (const step of script.run) {
+          if (typeof step.method === 'function') await step.method({ input: { confirmation: 'DELETE' } }, () => {}, kernel);
+          else if (step.method !== 'input') calls.push(step.method);
+        }
+      }, (error) => {
+        assert.ok(error.message.includes(message), `${platform}/${mode}/${name}/${stage}/${reason}: ${error.message}`);
+        if (reason === 'busy') assert.equal(error.details.task_count, 1);
+        return true;
+      });
+      assert.deepEqual(calls, stage === 'preflight' ? ['preflight'] : ['preflight', 'controller']);
+    }
+  }
 });
 
 test('settings use ENVIRONMENT first and fall back to the shipped _ENVIRONMENT template', () => {
@@ -208,6 +298,22 @@ test('Stop awaits the absolute Pinokio script owner before returning', async () 
   } } });
   assert.equal(stopped, false);
   await invoked; release(); await pending; assert.equal(stopped, true);
+});
+
+test('an active Start with a missing controller refuses before Pinokio tree cleanup', async () => {
+  const base = fakeApp('linux');
+  const calls = [];
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR,
+    filesystem: { ...base.filesystem, existsSync: () => true }, lifecycle: {
+      preflightStop: async () => ({ safe: true }),
+      requestGracefulStop: async () => ({ ok: true, absent: true }),
+      waitForInstallerLock: async () => calls.push('lock'),
+    } });
+  await assert.rejects(app.stopOwnedStart({}, () => {}, { api: {
+    running: { [app.paths.join(app.APP_DIR, 'pinokio', 'start.js')]: true },
+    stop: async () => calls.push('kernel-stop'),
+  } }), /no responsive stop controller/);
+  assert.deepEqual(calls, []);
 });
 
 test('installer record selects authoritative Python, data root, Node and npm; no imaginary with-env', () => {
@@ -265,8 +371,14 @@ function sessionHarness({ platform = 'darwin', buildCode = 0, dependencyCode = 0
     return child;
   }
   return { log, active, signals, options: { root: platform === 'win32' ? 'C:\\Astrid' : '/astrid', editor: platform === 'win32' ? 'C:\\editor' : '/editor', platform, installed, spawnProcess, signals,
+    checkStop: async () => ({ safe: true }),
     openController: async () => ({ close: async () => {} }),
-    gracefulDown: async (spec) => { log.push({ down: spec }); for (const child of [...active.values()]) close(child); },
+    gracefulDown: async (spec) => {
+      log.push({ down: spec });
+      const runtime = log.find((call) => call.command?.endsWith('/run') || call.command?.endsWith('cmd.exe'));
+      const child = runtime && active.get(runtime.pid);
+      if (child) close(child);
+    },
     portOpen: async () => occupied, pause: async () => {}, killProcess: (group, signal) => { log.push({ group, signal }); const child = active.get(-group); if (child) close(child); } } };
 }
 
@@ -284,12 +396,37 @@ test('temporary build Runtime cleanup: success, build failure and npm failure on
   }
 });
 
+test('build failure with busy cleanup keeps its controller open until the same session retries', async () => {
+  const h = sessionHarness({ platform: 'linux', buildCode: 1 });
+  let stop; let retryWork; let checks = 0; let controllerClosed = false;
+  await assert.rejects(runSession({ ...h.options, action: 'build', mode: 'local',
+    checkStop: async () => {
+      if (checks++ === 0) throw new Error('Astrid is busy (1 tasks running). Try again when they finish.');
+      return { safe: true, blockers: [] };
+    },
+    openController: async (_root, callback) => { stop = callback; return { close: async () => { controllerClosed = true; } }; },
+    output: (line) => {
+      if (!line.includes('Astrid is busy')) return;
+      retryWork = (async () => {
+        assert.equal(controllerClosed, false);
+        assert.equal(h.active.size, 1);
+        const retried = await stop();
+        assert.equal(retried.ok, true);
+      })();
+    },
+  }), /command failed/);
+  await retryWork;
+  assert.equal(controllerClosed, true);
+  assert.equal(h.active.size, 0);
+  assert.equal(checks, 2);
+});
+
 test('serve only announces ready after correct health; signal/error/conflict cleanup drains every child', async () => {
   for (const mode of ['backend', 'local']) for (const platform of ['darwin', 'linux', 'win32']) {
     const h = sessionHarness({ platform });
     let requests = 0;
     let published = false;
-    await assert.rejects(runSession({ ...h.options, action: 'serve', mode,
+    await runSession({ ...h.options, action: 'serve', mode,
       request: async (url) => {
         if (url.endsWith('/runtime-config/v1/workspace.json')) return { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) };
         requests++;
@@ -299,7 +436,7 @@ test('serve only announces ready after correct health; signal/error/conflict cle
         assert.equal(line, 'ASTRID_PINOKIO_READY'); assert.equal(requests, 2); published = true;
         queueMicrotask(() => h.signals.emit('SIGTERM'));
       },
-    }), /stopped/);
+    });
     assert.equal(published, true);
     assert.equal(h.active.size, 0);
   }
@@ -325,10 +462,12 @@ test('Stop of an idle/partial install and resolving Start without a mode remain 
   assert.equal(result.stopped, false);
   const script = await load('pinokio/start.js', app)({}, {});
   await assert.rejects(script.run[0].method(), /isn't fully installed/);
+  const freshLocal = await load('pinokio/install-local.js', app)({}, {});
+  assert.equal(freshLocal.run[0].method, app.ensureDoorPortFree);
 });
 
 
-test('controlled Stop orders editor, installed down, Runtime exit on every platform and mode', async () => {
+test('controlled Stop runs fenced down before editor cleanup and releases Runtime on every platform and mode', async () => {
   for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
     const h = sessionHarness({ platform });
     let stop;
@@ -341,7 +480,7 @@ test('controlled Stop orders editor, installed down, Runtime exit on every platf
         assert.deepEqual(spec.args, ['-I', '-m', 'astrid_runtime', 'down', '--profile', 'astrid', '--data-root', '/data', '--source-manifest', '/pinned/profile.json', '--json']);
         assert.equal(options.timeoutMs, 25_000);
         const preview = h.log.find((call) => call.args?.includes('--preview'));
-        if (preview) assert.equal(h.active.has(preview.pid), false);
+        if (preview) assert.equal(h.active.has(preview.pid), true);
         await h.options.gracefulDown(spec);
       },
       request: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1', schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }),
@@ -353,26 +492,101 @@ test('controlled Stop orders editor, installed down, Runtime exit on every platf
   }
 });
 
-test('failed/bounded-out graceful down leaves the live Runtime for final Pinokio kill', async () => {
-  for (const platform of ['darwin', 'win32']) {
+test('busy and unknown preflight/down failures preserve both live modes on every platform for retry', async () => {
+  for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local'])
+    for (const stage of ['preflight', 'down']) for (const reason of ['busy', 'transport', 'timeout', 'generic']) {
     const h = sessionHarness({ platform });
     let stop;
     let response;
-    await runSession({ ...h.options, action: 'serve', mode: 'backend',
-      openController: async (_root, callback) => { stop = callback; return { close: async () => {} }; },
-      gracefulDown: async () => { throw new Error('Command timed out'); },
-      request: async () => ({ status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1' }) }),
-      output: () => { response = stop(); },
+    let attempts = 0; let downCalls = 0; let controllerClosed = false;
+    const message = reason === 'busy' ? 'Astrid is busy (1 tasks running). Try again when they finish.\ntask-matrix [running]'
+      : reason === 'transport' ? 'Controller transport failed.' : reason === 'timeout' ? 'Command timed out' : 'Runtime stop failed.';
+    const details = { task_count: 1, blockers: [{ task_id: 'task-matrix', state: 'running' }] };
+    const refuseOnce = () => {
+      if (attempts++ === 0) {
+        const error = new Error(message);
+        if (reason === 'busy') error.details = details;
+        throw error;
+      }
+    };
+    await runSession({ ...h.options, action: 'serve', mode,
+      openController: async (_root, callback) => { stop = callback; return { close: async () => { controllerClosed = true; } }; },
+      checkStop: async () => { if (stage === 'preflight') refuseOnce(); return { safe: true }; },
+      gracefulDown: async (_spec, options) => {
+        downCalls++;
+        if (stage === 'down') refuseOnce();
+        await h.options.gracefulDown(_spec, options);
+      },
+      request: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1',
+        schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }),
+      output: () => { const before = h.log.length; response = stop().then(async (first) => {
+        assert.deepEqual(first, { ok: false, errors: [message], ...(reason === 'busy' ? { details } : {}) });
+        assert.equal(h.active.size, mode === 'local' ? 2 : 1);
+        assert.equal(controllerClosed, false);
+        assert.deepEqual(h.log.slice(before), []); // no signals, taskkill or other cleanup
+        return stop();
+      }); },
     });
-    assert.equal((await response).ok, false);
-    assert.deepEqual((await response).errors, ['Command timed out']);
-    assert.equal(h.active.size, 1);
-    for (const pid of h.active.keys()) h.options.killProcess(-pid, 'SIGKILL');
+    assert.equal((await response).ok, true);
+    assert.equal(attempts, 2);
+    assert.equal(downCalls, stage === 'preflight' ? 1 : 2);
     assert.equal(h.active.size, 0);
+    assert.equal(controllerClosed, true);
+    assert.equal((await stop()).ok, true);
+    assert.equal(downCalls, stage === 'preflight' ? 1 : 2);
   }
 });
 
-test('Stop during early startup only signals its own child and cannot down external discovery', async () => {
+test('cleanup retry after a completed down does not issue a second Runtime stop', async () => {
+  const h = sessionHarness({ platform: 'linux' });
+  let stop; let response; let downs = 0; let cleanupAttempts = 0;
+  await runSession({ ...h.options, action: 'serve', mode: 'local',
+    openController: async (_root, callback) => { stop = callback; return { close: async () => {} }; },
+    gracefulDown: async () => {
+      downs++;
+      const runtime = h.log.find((call) => call.command?.endsWith('/run'));
+      const child = h.active.get(runtime.pid);
+      h.active.delete(runtime.pid); child.emit('close', 0, null);
+    },
+    killProcess: (group, signal) => {
+      const editor = h.log.find((call) => call.args?.includes('--preview'));
+      if (editor?.pid === -group && cleanupAttempts++ === 0) throw new Error('editor cleanup unavailable');
+      h.options.killProcess(group, signal);
+    },
+    request: async () => ({ ok: true, status: 200, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }),
+    output: () => { response = stop().then(async (first) => {
+      assert.equal(first.ok, false);
+      assert.equal(h.active.size, 1);
+      assert.equal(downs, 1);
+      return stop();
+    }); },
+  });
+  assert.equal((await response).ok, true);
+  assert.equal(downs, 1);
+  assert.equal(h.active.size, 0);
+});
+
+test('hosted updater handoff accepts an orderly Runtime exit after a safe report without a second down', async () => {
+  const h = sessionHarness({ platform: 'linux' });
+  let downCalls = 0; let controllerClosed = false;
+  await runSession({ ...h.options, action: 'serve', mode: 'backend',
+    checkStop: async () => ({ safe: true, blockers: [] }),
+    gracefulDown: async () => { downCalls++; },
+    openController: async () => ({ close: async () => { controllerClosed = true; } }),
+    request: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1' }) }),
+    output: (line) => {
+      if (line !== 'ASTRID_PINOKIO_READY') return;
+      const runtime = h.log.find((call) => call.command?.endsWith('/run'));
+      const child = h.active.get(runtime.pid);
+      h.active.delete(runtime.pid); child.emit('close', 0, null);
+    },
+  });
+  assert.equal(downCalls, 0);
+  assert.equal(controllerClosed, true);
+  assert.equal(h.active.size, 0);
+});
+
+test('Stop before Runtime launch prevents child creation and cannot down external discovery', async () => {
   const h = sessionHarness();
   let down = false;
   await runSession({ ...h.options, action: 'serve', mode: 'local',
@@ -384,7 +598,7 @@ test('Stop during early startup only signals its own child and cannot down exter
 });
 
 test('maintenance never mutates after failed grace, forced stop or held installer lock', async () => {
-  for (const platform of ['darwin', 'linux', 'win32']) for (const reason of ['grace', 'force', 'lock']) {
+    for (const platform of ['darwin', 'linux', 'win32']) for (const reason of ['busy', 'unknown', 'force', 'lock']) {
     const log = [];
     const base = fakeApp(platform);
     const filesystem = {
@@ -394,7 +608,8 @@ test('maintenance never mutates after failed grace, forced stop or held installe
     };
     const app = { ...library.createApp({ platform, appDirectory: base.APP_DIR, filesystem, environment: {}, probe: async () => ({ kind: 'free' }),
       lifecycle: {
-        requestGracefulStop: async () => { log.push('grace'); if (reason === 'grace') throw new Error('grace failed'); },
+        preflightStop: async () => { log.push('preflight'); if (reason === 'busy') throw new Error('Astrid is busy (1 tasks running). Try again when they finish.'); if (reason === 'unknown') throw new Error('Runtime stop timed out.'); },
+        requestGracefulStop: async () => { log.push('grace'); },
         waitForInstallerLock: async () => { log.push('lock'); if (reason === 'lock') throw new Error('Astrid is still running. Stop it in Pinokio, then try again.'); },
       },
     }), validateExistingEditorCheckout: () => false };
@@ -410,8 +625,9 @@ test('maintenance never mutates after failed grace, forced stop or held installe
           else if (step.method === 'shell.run') log.push('mutation');
         }
       };
-      await assert.rejects(run(), /Astrid is still running\. Stop it in Pinokio, then try again\./);
-      assert.deepEqual(log, ['grace', 'force', 'lock']);
+      await assert.rejects(run(), reason === 'busy' ? /Astrid is busy \(1 tasks running\)/ : reason === 'unknown' ? /Runtime stop timed out/ : /Astrid is still running\. Stop it in Pinokio, then try again\./);
+      assert.deepEqual(log, reason === 'busy' || reason === 'unknown' ? ['preflight']
+        : reason === 'force' ? ['preflight', 'grace', 'force'] : ['preflight', 'grace', 'force', 'lock'], `${reason}: ${name}`);
     }
   }
 });
@@ -423,6 +639,7 @@ test('maintenance waits for delayed lock release after forced cleanup, including
     const locked = new Promise((resolve) => { release = resolve; });
     const base = fakeApp('darwin');
     const app = library.createApp({ appDirectory: base.APP_DIR, lifecycle: {
+      preflightStop: async () => {},
       requestGracefulStop: async () => { order.push('grace'); },
       waitForInstallerLock: async () => { order.push('probe'); await locked; order.push('free'); },
     } });
@@ -434,43 +651,16 @@ test('maintenance waits for delayed lock release after forced cleanup, including
   }
 });
 
-test('a hung POSIX editor stays parented for the final tree kill and prevents Runtime down', async () => {
-  const h = sessionHarness();
-  let stop;
-  let response;
-  let down = false;
-  await runSession({ ...h.options, action: 'serve', mode: 'local',
-    openController: async (_root, callback) => { stop = callback; return { close: async () => {} }; },
-    killProcess: (group, signal) => {
-      const preview = h.log.find((call) => call.args?.includes('--preview'));
-      if (preview?.pid === -group && signal === 'SIGTERM') return;
-      h.options.killProcess(group, signal);
-    },
-    limit: async (promise, _ms, label) => {
-      if (label === 'Editor stop') throw new Error('Editor stop timed out.');
-      return promise;
-    },
-    gracefulDown: async () => { down = true; },
-    request: async () => ({ ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }),
-    output: () => { response = stop(); },
-  });
-  assert.equal((await response).ok, false);
-  assert.equal(down, false);
-  assert.equal(h.active.size, 2);
-  for (const pid of h.active.keys()) h.options.killProcess(-pid, 'SIGKILL');
-});
-
-
 test('app updater supervisor remains controllable outside the native Start script', async () => {
   const base = fakeApp('darwin');
   const order = [];
   const app = library.createApp({ platform: 'darwin', appDirectory: base.APP_DIR, environment: {},
     filesystem: { readFileSync: () => JSON.stringify({ schema: 1, pid: 123, port: 9876 }) },
-    lifecycle: { requestGracefulStop: async () => order.push('grace'), waitForInstallerLock: async () => order.push('lock') },
+    lifecycle: { preflightStop: async () => order.push('preflight'), requestGracefulStop: async () => order.push('grace'), waitForInstallerLock: async () => order.push('lock') },
   });
   assert.equal(app.hasOwnedSupervisor(), true);
   await app.stopOwnedStart({}, () => {}, { api: { running: {}, stop: async () => order.push('force') } });
-  assert.deepEqual(order, ['grace', 'lock']);
+  assert.deepEqual(order, ['preflight', 'grace', 'lock']);
   const { menu } = load('pinokio.js', { ...app, readInstallMode: () => 'backend', probeDoor: async () => ({ kind: 'astrid' }) });
   const items = await menu({}, { exists: () => true, running: () => false });
   assert.deepEqual(plain(items.map((item) => item.text)), ['Open Astrid', 'Update and restart', 'Stop']);
