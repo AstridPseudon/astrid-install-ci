@@ -84,10 +84,10 @@ export function commands(root, editor, mode, installed, platform = process.platf
 }
 const environmentCmd = (env) => env.ComSpec || env.COMSPEC || path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
 
-export function runtimeStatusHealthy(status, operationId) {
+export function runtimeStatusHealthy(status) {
   return status?.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok'
-    && (!operationId || (status.discovery?.installer_operation_id === operationId
-      && Boolean(status.discovery?.active_realm) && Boolean(status.discovery?.runtime_instance_id)));
+    && Boolean(status.discovery?.active_realm) && Boolean(status.discovery?.runtime_instance_id)
+    && status.health?.runtime_instance_id === status.discovery.runtime_instance_id;
 }
 
 export async function localPreviewReady(discovery, { request = fetch } = {}) {
@@ -105,12 +105,10 @@ export async function localPreviewReady(discovery, { request = fetch } = {}) {
 export async function localSessionReady({ root, editor, platform = process.platform,
   installed = installation(root, { platform }), request = fetch, run = runCommand } = {}) {
   try {
-    const operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
-    if (operationId !== undefined && (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId))) return false;
     const statusOutput = await run(commands(root, editor, 'local', installed, platform).status,
       { env: installed.env, cwd: root, timeoutMs: 5000 });
     const status = JSON.parse(statusOutput);
-    if (!runtimeStatusHealthy(status, operationId)) return false;
+    if (!runtimeStatusHealthy(status)) return false;
     return localPreviewReady(status.discovery, { request });
   } catch { return false; }
 }
@@ -120,11 +118,12 @@ export function parseSessionOptions(argument = '{}') {
   try { options = JSON.parse(argument); }
   catch { throw new Error('Invalid session options.'); }
   if (!options || typeof options !== 'object' || Array.isArray(options)
-    || Object.keys(options).some((key) => key !== 'prepareEditor')
-    || (Object.hasOwn(options, 'prepareEditor') && typeof options.prepareEditor !== 'boolean')) {
+    || Object.keys(options).some((key) => !['prepareEditor', 'recoverLocalUpdate'].includes(key))
+    || (Object.hasOwn(options, 'prepareEditor') && typeof options.prepareEditor !== 'boolean')
+    || (Object.hasOwn(options, 'recoverLocalUpdate') && typeof options.recoverLocalUpdate !== 'boolean')) {
     throw new Error('Invalid session options.');
   }
-  return { prepareEditor: options.prepareEditor ?? false };
+  return { prepareEditor: options.prepareEditor ?? false, recoverLocalUpdate: options.recoverLocalUpdate ?? false };
 }
 
 // On macOS a disappearing/zombie-only process group can report EPERM rather
@@ -146,30 +145,31 @@ export function signalGroup(pid, signal, { killProcess = process.kill.bind(proce
 }
 
 export async function runSession({ action, root, editor, mode, platform = process.platform,
-  installed = installation(root), spawnProcess = spawn, request = fetch,
+  installed: initialInstalled = installation(root), resolveInstallation = () => installation(root, { platform, filesystem, environment: process.env }),
+  spawnProcess = spawn, request = fetch,
+  filesystem = fs,
   checkStop = preflightStop,
   portOpen = app.tcpPortOpen, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   killProcess = process.kill.bind(process), signals = process, output = console.log,
   startupDeadlineMs = 180_000, openController = createController, gracefulDown = runCommand,
-  limit = bounded, prepareEditor = false } = {}) {
+  limit = bounded, prepareEditor = false, recoverLocalUpdate = false } = {}) {
   if (!['serve', 'build'].includes(action) || !['backend', 'local'].includes(mode)) throw new Error('Invalid Astrid session arguments.');
   if (prepareEditor && (action !== 'serve' || mode !== 'local')) throw new Error('Editor preparation requires a local serve session.');
-  const specs = commands(root, editor, mode, installed, platform);
-  const env = { ...installed.env };
-  const operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
-  if (operationId !== undefined) {
-    if (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId)) throw new Error('Invalid installer transaction operation id.');
-    env.ASTRID_INSTALLER_OPERATION_ID = operationId;
-  }
+  if (recoverLocalUpdate && (action !== 'serve' || mode !== 'local')) throw new Error('Local update recovery requires a local serve session.');
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  let installed = initialInstalled;
+  let specs = commands(root, editor, mode, installed, platform);
+  let env = { ...installed.env };
+  delete env.ASTRID_INSTALLER_OPERATION_ID;
   if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
   else delete env.ASTRID_APP_LOOPBACK_ORIGIN;
   const children = [];
   let stopping = false;
+  let updateInProgress = recoverLocalUpdate;
   let downInProgress = false;
   let runtimeDown = false;
   let discovery;
   let runtimeItem;
-  let editorItem;
   let controller;
   let stopComplete = false;
   let shutdownPromise;
@@ -185,9 +185,9 @@ export async function runSession({ action, root, editor, mode, platform = proces
   failed.catch(() => {});
   const fail = (error) => { failure ??= error; wakeFailure(failure); };
 
-  function launch(spec, { cwd = root, capture = false, persistent = false } = {}) {
+  function launch(spec, { cwd = root, capture = false, persistent = false, childEnv = env } = {}) {
     if (stopping) throw new Error('Astrid start cancelled.');
-    const child = spawnProcess(spec.command, spec.args, { cwd, env, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    const child = spawnProcess(spec.command, spec.args, { cwd, env: childEnv, stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       detached: platform !== 'win32', ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
     const item = { child, done: null, closed: false, released: false, stdout: '' };
     children.push(item);
@@ -198,7 +198,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
         item.closed = true;
         item.exitCode = code;
         item.exitSignal = signal;
-        if (persistent && !stopping && !(item === runtimeItem && downInProgress)) {
+        if (persistent && !stopping && !updateInProgress && !(item === runtimeItem && downInProgress)) {
           const error = new Error(`Astrid quit unexpectedly (${signal || code}).`);
           if (item === runtimeItem) runtimeExitFailure = error;
           fail(error);
@@ -216,14 +216,14 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (code !== 0) throw new Error(`Astrid command failed (exit ${code}): ${path.basename(spec.command)}`);
     return item;
   };
-  async function runtimeHealthy() {
-    const item = launch(specs.status, { capture: true });
+  async function runtimeHealthy(childEnv = env) {
+    const item = launch(specs.status, { capture: true, childEnv });
     const code = await Promise.race([item.done, failed]);
     await terminate(item);
     if (code !== 0) return false;
     try {
       const status = JSON.parse(item.stdout);
-      const healthy = runtimeStatusHealthy(status, operationId);
+      const healthy = runtimeStatusHealthy(status);
       if (healthy) discovery = status.discovery;
       return healthy;
     } catch { return false; }
@@ -318,6 +318,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
     return stopRequestPromise;
   };
   const onSignal = () => {
+    if (updateInProgress) { output('Astrid is updating. Wait for the update to finish before stopping it.'); return; }
     stopRequested = true;
     shutdown().then((result) => {
       if (result.ok) fail(new Error('Astrid session stopped.'));
@@ -327,13 +328,94 @@ export async function runSession({ action, root, editor, mode, platform = proces
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.on(signal, onSignal);
   try {
     // Never attach the editor to someone else's same-data-root Runtime.
-    if (await runtimeHealthy()) throw new Error('Another Astrid is already running with your projects. Stop it, then try again.');
+    if (!recoverLocalUpdate && await runtimeHealthy()) throw new Error('Another Astrid is already running with your projects. Stop it, then try again.');
     if (mode === 'local' && action === 'serve' && await portOpen(5180)) throw new Error("Another program is using port 5180, so Astrid's editor can't start. Close it, then try again.");
-    controller = await openController(root, requestStop);
+    const localUpdate = {
+      isUpdating: () => updateInProgress,
+      begin: async () => {
+        if (mode !== 'local' || action !== 'serve') throw new Error('Pinokio local updates require a running fully local session.');
+        // The App updater serializes transactions. Begin is only a maintenance
+        // flag, so it must also be safe when rollback repeats it before the
+        // first candidate Runtime has started.
+        updateInProgress = true;
+        return { updating: true };
+      },
+      runtime: async ({ version } = {}) => {
+        if (!updateInProgress) throw new Error('Begin the Pinokio update before starting its Runtime.');
+        if (typeof version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version)) {
+          throw new Error('Invalid Pinokio Runtime update request.');
+        }
+        const selected = filesystem.readFileSync(paths.join(root, 'current'), 'utf8').trim();
+        if (selected !== version) throw new Error('The selected Pinokio Runtime version changed before it could start.');
+        if (runtimeItem && !runtimeItem.closed) await limit(runtimeItem.done, 5000, 'Previous Astrid Runtime exit');
+        if (runtimeItem && !runtimeItem.closed) throw new Error('The previous Astrid Runtime has not stopped yet.');
+        const selectedInstalled = await resolveInstallation(version);
+        const expectedRoot = paths.resolve(paths.join(root, 'versions', version));
+        if (!selectedInstalled?.record || paths.resolve(selectedInstalled.record.root) !== expectedRoot) {
+          throw new Error('The selected Pinokio Runtime record does not match its current version pointer.');
+        }
+        installed = selectedInstalled;
+        specs = commands(root, editor, mode, installed, platform);
+        env = { ...installed.env };
+        delete env.ASTRID_INSTALLER_OPERATION_ID;
+        if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
+        discovery = undefined;
+        runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
+        await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime');
+        return { version, ready: true };
+      },
+      end: async () => {
+        if (!updateInProgress) return { updating: false };
+        if (recoverLocalUpdate && !runtimeItem) {
+          const journalPath = paths.join(root, 'update-transaction.json');
+          const readTerminalJournal = () => {
+            const journal = JSON.parse(filesystem.readFileSync(journalPath, 'utf8'));
+            if (!journal || journal.transaction_context?.owner !== 'local-update'
+              || !['complete', 'rolled_back'].includes(journal.step)) {
+              throw new Error('Local update recovery has not reached a terminal journal state; keep recovery active and retry.');
+            }
+            return journal;
+          };
+          readTerminalJournal();
+          const selected = filesystem.readFileSync(paths.join(root, 'current'), 'utf8').trim();
+          if (typeof selected !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(selected)) {
+            throw new Error('The selected Pinokio Runtime version is not stable after recovery.');
+          }
+          const selectedInstalled = await resolveInstallation(selected);
+          const expectedRoot = paths.resolve(paths.join(root, 'versions', selected));
+          if (!selectedInstalled?.record || paths.resolve(selectedInstalled.record.root) !== expectedRoot) {
+            throw new Error('The selected Pinokio Runtime version does not match its installed record after recovery.');
+          }
+          if (filesystem.readFileSync(paths.join(root, 'current'), 'utf8').trim() !== selected) {
+            throw new Error('The selected Pinokio Runtime version changed during recovery.');
+          }
+          readTerminalJournal();
+          installed = selectedInstalled;
+          specs = commands(root, editor, mode, installed, platform);
+          env = { ...installed.env };
+          delete env.ASTRID_INSTALLER_OPERATION_ID;
+          if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
+          discovery = undefined;
+          if (await runtimeHealthy(env)) {
+            throw new Error('A Runtime is already healthy outside this Pinokio session. Stop that Runtime, then retry local recovery.');
+          }
+          runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
+          await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime after local update recovery');
+        }
+        if (!(await runtimeHealthy(env))) {
+          throw new Error('The Astrid Runtime is not ready; update monitoring remains active for recovery.');
+        }
+        updateInProgress = false;
+        return { updating: false, ready: true };
+      },
+    };
+    controller = await openController(root, requestStop, { localUpdate });
     if (action === 'build') await checked(specs.dependencies, { cwd: editor });
-    discovery = undefined;
-    runtimeItem = launch(specs.runtime, { persistent: true });
-    await waitUntil(runtimeHealthy, 'Astrid');
+    if (!recoverLocalUpdate) {
+      discovery = undefined;
+      runtimeItem = launch(specs.runtime, { persistent: true });
+      await waitUntil(runtimeHealthy, 'Astrid');
+    }
     if (action === 'build') {
       await checked(specs.build, { cwd: editor });
     } else {
@@ -341,7 +423,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
         await checked(specs.dependencies, { cwd: editor });
         await checked(specs.build, { cwd: editor });
       }
-      if (mode === 'local') editorItem = launch(specs.preview, { cwd: editor, persistent: true });
+      if (mode === 'local') launch(specs.preview, { cwd: editor, persistent: true });
       const url = mode === 'local' ? 'http://127.0.0.1:5180/tools/video-editor' : app.DOOR_HEALTH_URL;
       await waitUntil(async () => {
         if (mode === 'local') return localPreviewReady(discovery, { request });
@@ -393,6 +475,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   catch {
     console.error('Astrid: Invalid session options.'); process.exitCode = 1;
   }
-  if (parsed) runSession({ action, root, editor, mode, prepareEditor: parsed.prepareEditor })
+    if (parsed) runSession({ action, root, editor, mode, prepareEditor: parsed.prepareEditor,
+      recoverLocalUpdate: parsed.recoverLocalUpdate })
     .catch((error) => { console.error(`Astrid: ${error.message}`); process.exitCode = 1; });
 }

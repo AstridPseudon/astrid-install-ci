@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import library from '../pinokio/lib.js';
+import { createController, CONTROL_FILE, requestLocalUpdate } from '../pinokio/lifecycle.mjs';
 import { commands, installation, localSessionReady, parseSessionOptions, runSession, signalGroup } from '../pinokio/session.mjs';
 
 const require = createRequire(import.meta.url);
@@ -51,8 +53,8 @@ for (const platform of ['darwin', 'linux', 'win32']) {
         const map = {
           install: [expected.install], 'install-local': fullLocal,
           'add-local': [expected.pull, expected.localUpdate, expected.build],
-          update: [app.shellStep(app.launcherPullMessage()).params.message,
-            ...(mode === 'local' ? [expected.pull, expected.localInstall] : [expected.install])],
+          update: [expected.launcherPull,
+            ...(mode === 'backend' ? [expected.install] : [])],
           start: [expected[mode]], stop: [], reset: [], uninstall: [expected.uninstall],
           'uninstall-delete-data': [expected.delete],
         };
@@ -77,6 +79,13 @@ for (const platform of ['darwin', 'linux', 'win32']) {
             assert.deepEqual(plain(script.run[1].params.on), [{ event: '/ASTRID_PINOKIO_FAILURE/', break: true }, { event: '/ASTRID_PINOKIO_READY/', done: true }]);
             assert.deepEqual(plain(script.run.at(-1)), { method: 'local.set', params: app.localSetOpenTarget(mode) });
           }
+          if (name === 'update') {
+            if (mode === 'local') {
+              assert.equal(script.run.at(-2).method, app.ensureLocalSessionForUpdate);
+              assert.equal(script.run.at(-1).method, app.runLocalUpdate);
+              assert.equal(shells.length, 1, 'local Update only pulls the Pinokio launcher before calling the App updater');
+            } else assert.equal(shells.at(-1).method, 'shell.run');
+          }
           if (name === 'reset') assert.equal(shells.length, 0);
           if (name === 'uninstall-delete-data') {
             await assert.rejects(script.run[1].method({ input: { confirmation: 'delete' } }), /Cancelled, so nothing was deleted/);
@@ -96,6 +105,76 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     }
   }
 }
+
+test('Bash launcher pull reports a convenient restart only when HEAD changes and preserves failures', { skip: process.platform === 'win32' }, () => {
+  const temporary = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'pinokio-launcher-pull-'));
+  const bin = path.join(temporary, 'bin');
+  fs.mkdirSync(bin);
+  const git = path.join(bin, 'git');
+  fs.writeFileSync(git, `#!/usr/bin/env node
+const fs = require('node:fs');
+const statePath = process.env.PINOKIO_GIT_STATE;
+const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+const action = process.argv.at(-2);
+state.calls.push(action);
+if (action === 'rev-parse') {
+  const head = state.heads.shift();
+  fs.writeFileSync(statePath, JSON.stringify(state));
+  if (head === undefined) process.exit(9);
+  process.stdout.write(head + '\\n');
+} else if (action === 'pull') { fs.writeFileSync(statePath, JSON.stringify(state)); process.exit(state.pullStatus); }
+else process.exit(8);
+`);
+  fs.chmodSync(git, 0o755);
+  const message = fakeApp('linux').launcherPullMessage();
+  const invoke = (state) => {
+    const statePath = path.join(temporary, 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify(state));
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-c', message], {
+      cwd: temporary, encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PINOKIO_GIT_STATE: statePath },
+    });
+    return { ...result, state: JSON.parse(fs.readFileSync(statePath, 'utf8')) };
+  };
+  try {
+    const changed = invoke({ heads: ['old', 'new'], pullStatus: 0, calls: [] });
+    assert.equal(changed.status, 0);
+    assert.match(changed.stdout, /Restart Astrid when convenient/);
+    assert.deepEqual(changed.state.calls, ['rev-parse', 'pull', 'rev-parse']);
+    const unchanged = invoke({ heads: ['same', 'same'], pullStatus: 0, calls: [] });
+    assert.equal(unchanged.status, 0);
+    assert.doesNotMatch(unchanged.stdout, /Restart Astrid/);
+    assert.deepEqual(unchanged.state.calls, ['rev-parse', 'pull', 'rev-parse']);
+    const failed = invoke({ heads: ['old', 'new'], pullStatus: 7, calls: [] });
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /Couldn.t update the Pinokio launcher/);
+    assert.doesNotMatch(failed.stdout, /Restart Astrid/);
+    assert.deepEqual(failed.state.calls, ['rev-parse', 'pull']);
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+});
+
+test('PowerShell launcher pull applies the same changed, unchanged and failed behavior', { skip: process.platform !== 'win32' }, () => {
+  const message = fakeApp('win32').launcherPullMessage();
+  const invoke = (heads, pullStatus) => {
+    const script = [
+      `$script:heads = @(${heads.map((head) => `'${head}'`).join(', ')})`,
+      '$script:headIndex = 0',
+      `function git { if ($args -contains 'rev-parse') { $value = $script:heads[$script:headIndex]; $script:headIndex++; $global:LASTEXITCODE = 0; return $value }; if ($args -contains 'pull') { $global:LASTEXITCODE = ${pullStatus}; return } }`,
+      message,
+    ].join('\n');
+    return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+  };
+  const changed = invoke(['old', 'new'], 0);
+  assert.equal(changed.status, 0);
+  assert.match(changed.stdout, /Restart Astrid when convenient/);
+  const unchanged = invoke(['same', 'same'], 0);
+  assert.equal(unchanged.status, 0);
+  assert.doesNotMatch(unchanged.stdout, /Restart Astrid/);
+  const failed = invoke(['old', 'new'], 7);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stdout + failed.stderr, /Couldn.t update the Pinokio launcher/);
+  assert.doesNotMatch(failed.stdout, /Restart Astrid/);
+});
 
 test('menu: all operation, installation, starting, ready, external and conflict states', async () => {
   for (const mode of [null, 'backend', 'local']) {
@@ -181,7 +260,8 @@ test('detached local readiness reuses the session status and preview/config bind
   const installed = { env: {} };
   const requests = [];
   let configMatches = true;
-  const result = () => JSON.stringify({ support: { healthy: true }, health: { status: 'ok' }, discovery });
+  const result = () => JSON.stringify({ support: { healthy: true },
+    health: { status: 'ok', runtime_instance_id: 'instance-1' }, discovery });
   const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed,
     run: async (spec) => { assert.ok(spec.args.includes('status')); return result(); },
     request: async (url) => {
@@ -200,11 +280,34 @@ test('detached local readiness reuses the session status and preview/config bind
   }), false);
   const bound = { env: { ASTRID_INSTALLER_OPERATION_ID: 'a'.repeat(32) } };
   assert.equal(await localSessionReady({ root: '/astrid', editor: '/editor', installed: bound,
-    run: async () => result(), request: async () => assert.fail('must reject a mismatched transaction binding before HTTP'),
-  }), false);
+    run: async () => result(), request: async (url) => url.endsWith('/tools/video-editor') ? { ok: true }
+      : { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance-1', realmId: 'realm-1' }) },
+  }), true);
 });
 
-test('Update sends hosted and local choices through one transaction after read-only preflight', async () => {
+test('detached local readiness still requires Runtime instance and realm identity', async () => {
+  for (const discovery of [{ active_realm: 'realm' }, { runtime_instance_id: 'instance' }]) {
+    const status = JSON.stringify({ support: { healthy: true },
+      health: { status: 'ok', runtime_instance_id: discovery.runtime_instance_id }, discovery });
+    const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed: { env: {} },
+      run: async () => status,
+      request: async () => assert.fail('missing Runtime identity must fail before preview checks'),
+    });
+    assert.equal(ready, false);
+  }
+  for (const healthId of [undefined, 'other-instance']) {
+    const status = JSON.stringify({ support: { healthy: true },
+      health: { status: 'ok', ...(healthId ? { runtime_instance_id: healthId } : {}) },
+      discovery: { runtime_instance_id: 'instance', active_realm: 'realm' } });
+    const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed: { env: {} },
+      run: async () => status,
+      request: async () => assert.fail('health/discovery instance mismatch must fail before preview checks'),
+    });
+    assert.equal(ready, false);
+  }
+});
+
+test('Update preserves hosted bootstrap and routes fully local Update through the App updater', async () => {
   for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backend', 'local']) {
     const app = fakeApp(platform, 'feat/pinokio', mode);
     const script = await load('pinokio/update.js', app)({}, {});
@@ -217,14 +320,306 @@ test('Update sends hosted and local choices through one transaction after read-o
     assert.match(pullMessage, /update the Pinokio launcher\./);
     assert.match(pullMessage, /undo those edits, then choose Update again\./);
     assert.ok(pull.params.on.some((event) => event.event === '/ASTRID_PINOKIO_FAILURE/' && event.break));
-    const astridUpdate = script.run.length - 1;
-    assert.equal(script.run[astridUpdate].method, 'shell.run');
-    assert.ok(astridUpdate > 1, `Astrid update follows the launcher pull (${platform}, ${mode})`);
-    assert.ok(shellMessage(script.run[astridUpdate], platform).includes('--root'));
-    assert.doesNotMatch(shellMessage(script.run[astridUpdate], platform), /--update-app|--update(?:\s|')/);
-    if (mode === 'local') assert.match(shellMessage(script.run[astridUpdate], platform), /install-manifest\.json/);
+    if (mode === 'local') {
+      assert.equal(script.run[2].method, app.ensureLocalSessionForUpdate);
+      assert.equal(script.run[3].method, app.runLocalUpdate);
+      assert.equal(script.run.length, 4);
+    } else {
+      const astridUpdate = script.run.at(-1);
+      assert.equal(astridUpdate.method, 'shell.run');
+      assert.ok(shellMessage(astridUpdate, platform).includes('--root'));
+      assert.doesNotMatch(shellMessage(astridUpdate, platform), /--update-app|--update(?:\s|')/);
+    }
   }
   assert.equal(library.LAUNCHER_PULL_FAILURE, "Couldn't update the Pinokio launcher. If you edited its files, undo those edits, then choose Update again.");
+});
+
+test('the fully-local Pinokio caller launches the installed npm update script in the editor checkout', async () => {
+  const base = fakeApp('linux', '', 'local');
+  const root = base.BACKEND_ROOT;
+  const version = 'v2';
+  const versionRoot = path.join(root, 'versions', version);
+  const node = path.join(versionRoot, 'node', 'bin', 'node');
+  const python = path.join(versionRoot, 'py', 'bin', 'python');
+  const profile = path.join(versionRoot, 'profile.json');
+  const records = new Map([
+    [path.join(base.APP_DIR, 'app', 'install-mode.json'), JSON.stringify({ schema_version: 1, mode: 'local' })],
+    [path.join(root, 'current'), version],
+    [path.join(versionRoot, 'version.json'), JSON.stringify({ root: versionRoot, python, profile, env: { ASTRID_NODE_EXECUTABLE: node } })],
+    [path.join(root, 'install.json'), JSON.stringify({ owner: 'haus.astrid.runtime', managed_by: 'pinokio', data_root: '/Astrid Data' })],
+  ]);
+  const npmCli = path.resolve(path.dirname(node), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const npxCli = path.join(path.dirname(npmCli), 'npx-cli.js');
+  const installedFiles = new Set([node, python, profile, npmCli, npxCli]);
+  let invoked;
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => { if (records.has(file)) return records.get(file); throw Object.assign(new Error('absent'), { code: 'ENOENT' }); },
+      existsSync: (file) => installedFiles.has(file) },
+    execute: (command, args, options) => { invoked = { command, args, options }; return { status: 0, stdout: 'up to date\n', stderr: '' }; },
+    lifecycle: { preflightStop: async () => ({ safe: true }) },
+  });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  assert.equal(script.run.at(-1).method, app.runLocalUpdate);
+  let output = '';
+  await app.runLocalUpdate({}, (event) => { output += event.raw; });
+  assert.equal(invoked.command, node);
+  assert.deepEqual(invoked.args, [npmCli, 'run', 'update']);
+  assert.equal(invoked.options.cwd, app.EDITOR_DIR);
+  assert.equal(invoked.options.timeout, 600_000);
+  assert.match(output, /up to date/);
+});
+
+test('stopped fully-local Update starts the existing Pinokio Start session and waits for readiness', async () => {
+  const base = fakeApp('linux', '', 'local');
+  let readyChecks = 0;
+  let started;
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => {
+      if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' });
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    }, existsSync: () => false },
+    sessionReadyCheck: async () => ++readyChecks > 1, pause: async () => {},
+    startSessionForUpdate: async (options) => { started = options; },
+  });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  const result = await script.run[2].method({}, () => {});
+  assert.equal(started.root, app.BACKEND_ROOT);
+  assert.equal(started.editor, app.EDITOR_DIR);
+  assert.equal(started.recoverLocalUpdate, false);
+  assert.equal(typeof started.ondata, 'function');
+  assert.deepEqual(plain(result), { started: true, ready: true, recovering: false });
+  assert.equal(readyChecks, 2);
+});
+
+test('interrupted local App update starts runSession in journal-recovery mode and reruns npm update', async () => {
+  const base = fakeApp('linux', '', 'local');
+  const transaction = JSON.stringify({ step: 'switched', transaction_context: { owner: 'local-update' } });
+  let readyChecks = 0;
+  let startOptions;
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => {
+      if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' });
+      if (file.endsWith('update-transaction.json')) return transaction;
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    }, existsSync: () => false },
+    sessionReadyCheck: async () => ++readyChecks > 1, pause: async () => {},
+    startSessionForUpdate: async (options) => { startOptions = options; },
+  });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  assert.equal(script.run.length, 2);
+  assert.equal(script.run[0].method, app.ensureLocalSessionForUpdate);
+  assert.equal(script.run[1].method, app.runLocalUpdate);
+  await script.run[0].method({}, () => {});
+  assert.equal(startOptions.recoverLocalUpdate, true);
+});
+
+for (const step of ['complete', 'rolled_back']) {
+  test(`local Update after Stop with a ${step} journal starts the normal Runtime session`, async () => {
+    const base = fakeApp('linux', '', 'local');
+    const transaction = JSON.stringify({ step, transaction_context: { owner: 'local-update' } });
+    let startOptions;
+    const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+      filesystem: { readFileSync: (file) => {
+        if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' });
+        if (file.endsWith('update-transaction.json')) return transaction;
+        throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+      }, existsSync: () => false },
+      sessionReadyCheck: async () => true,
+      startSessionForUpdate: async (options) => { startOptions = options; },
+    });
+    app.validateExistingEditorCheckout = () => true;
+    app.runLocalUpdate = async () => ({ updated: true });
+    const h = sessionHarness({ platform: 'linux' });
+    let sessionFinished;
+    const script = await load('pinokio/update.js', app)({}, {});
+    assert.equal(script.run[2].method, app.ensureLocalSessionForUpdate);
+    await script.run[2].method({}, () => {});
+    assert.equal(startOptions.recoverLocalUpdate, false);
+    assert.deepEqual(plain(await script.run[3].method({}, () => {})), { updated: true });
+    sessionFinished = runSession({ ...h.options, action: 'serve', mode: 'local', recoverLocalUpdate: startOptions.recoverLocalUpdate,
+      request: async (url) => url.endsWith('/runtime-config/v1/workspace.json')
+        ? { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }
+        : { ok: true, status: 200 },
+      output: (line) => { if (line === 'ASTRID_PINOKIO_READY') queueMicrotask(() => h.signals.emit('SIGTERM')); },
+    });
+    await sessionFinished;
+    assert.ok(h.log.some((item) => item.command?.endsWith('/run')), 'normal recovery must launch Runtime');
+    assert.ok(h.log.some((item) => item.command === '/pinned/python' && item.args.includes('status')),
+      'normal recovery must populate discovery through Runtime status');
+    assert.equal(h.active.size, 0);
+  });
+}
+
+test('pending local Update authenticates the retained controller before bypassing stopped editor readiness', async (t) => {
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
+  const temporary = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'astrid-pinokio-pending-retry-'));
+  const appDirectory = path.join(temporary, 'pinokio', 'api', 'astrid');
+  const root = path.join(appDirectory, 'app', 'astrid');
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(root), 'install-mode.json'), JSON.stringify({ schema_version: 1, mode: 'local' }));
+  fs.writeFileSync(path.join(root, 'update-transaction.json'), JSON.stringify({
+    step: 'recovering', transaction_context: { owner: 'local-update' },
+  }));
+  const version = 'v2';
+  const versionRoot = path.join(root, 'versions', version);
+  const node = path.join(versionRoot, 'node', 'bin', 'node');
+  const python = path.join(versionRoot, 'py', 'bin', 'python');
+  const profile = path.join(versionRoot, 'profile.json');
+  const npmCli = path.resolve(path.dirname(node), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  const npxCli = path.join(path.dirname(npmCli), 'npx-cli.js');
+  fs.mkdirSync(versionRoot, { recursive: true });
+  fs.writeFileSync(path.join(root, 'current'), `${version}\n`);
+  fs.writeFileSync(path.join(versionRoot, 'version.json'), JSON.stringify({ root: versionRoot, python, profile,
+    env: { ASTRID_NODE_EXECUTABLE: node } }));
+  fs.writeFileSync(path.join(root, 'install.json'), JSON.stringify({ owner: 'haus.astrid.runtime',
+    managed_by: 'pinokio', data_root: path.join(temporary, 'Astrid Data') }));
+  const installedFiles = new Set([node, npmCli, npxCli, python, profile]);
+  const filesystem = { readFileSync: fs.readFileSync.bind(fs), existsSync: (file) => installedFiles.has(file) || fs.existsSync(file) };
+  let updating = false;
+  let controlCalls = 0;
+  let runtimeVerified = false;
+  let editorReady = false;
+  let readinessChecks = 0;
+  const controller = await createController(root, async () => ({ ok: true }), { localUpdate: {
+    isUpdating: () => updating,
+    begin: async () => { controlCalls += 1; updating = true; return { updating: true }; },
+    runtime: async ({ version: selected } = {}) => {
+      assert.equal(updating, true);
+      assert.equal(selected, version);
+      runtimeVerified = true;
+      return { version: selected, ready: true };
+    },
+    end: async () => {
+      assert.equal(updating, true);
+      assert.equal(runtimeVerified, true);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'update-transaction.json'))).step, 'rolled_back');
+      assert.equal(editorReady, true);
+      updating = false;
+      return { updating: false, ready: true };
+    },
+  } });
+  t.after(async () => { Date.now = originalNow; await controller.close(); fs.rmSync(temporary, { recursive: true, force: true }); });
+  const record = JSON.parse(fs.readFileSync(path.join(root, CONTROL_FILE), 'utf8'));
+  let recoveryPromise;
+  let invoked;
+  const app = library.createApp({ platform: 'linux', appDirectory, environment: {},
+    filesystem,
+    execute: (command, args, options) => {
+      invoked = { command, args, options };
+      recoveryPromise = (async () => {
+        assert.deepEqual(plain(await requestLocalUpdate(root, 'runtime', { version })),
+          { ok: true, version, ready: true });
+        fs.writeFileSync(path.join(root, 'update-transaction.json'), JSON.stringify({
+          step: 'rolled_back', transaction_context: { owner: 'local-update' },
+        }));
+        editorReady = true;
+        assert.deepEqual(plain(await requestLocalUpdate(root, 'end')), { ok: true, updating: false, ready: true });
+      })();
+      return { status: 0, stdout: 'rollback recovery complete\n', stderr: '' };
+    },
+    processAlive: (pid) => pid === record.pid,
+    sessionReadyCheck: async () => { readinessChecks += 1; return editorReady; },
+    pause: async (ms) => { clock += ms; },
+    startSessionForUpdate: async () => assert.fail('must reuse the authenticated live controller'),
+  });
+  app.validateExistingEditorCheckout = () => true;
+  const script = await load('pinokio/update.js', app)({}, {});
+  assert.equal(script.run[0].method, app.ensureLocalSessionForUpdate);
+  assert.equal(script.run[1].method, app.runLocalUpdate);
+  const ensured = await script.run[0].method({}, () => {});
+  assert.deepEqual(plain(ensured), { started: false, ready: true, recovering: true });
+  assert.equal(readinessChecks, 0, 'recovery must reach the updater before waiting for the editor it restores');
+  assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST', headers: {
+    Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}`,
+  } })).status, 409, 'maintenance keeps C1 Stop admission closed until recovery completes');
+  await script.run[1].method({}, () => {});
+  await recoveryPromise;
+  assert.equal(invoked.command, node);
+  assert.deepEqual(invoked.args, [npmCli, 'run', 'update']);
+  assert.equal(invoked.options.cwd, app.EDITOR_DIR);
+  assert.equal(editorReady, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'update-transaction.json'))).step, 'rolled_back');
+  assert.equal(controlCalls, 1, 'the caller must prove ownership through the secret and exact loopback Host');
+  assert.equal(updating, false, 'the authenticated end callback releases the existing C1 Stop fence after recovery');
+  assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST', headers: {
+    Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}`,
+  } })).status, 200);
+});
+
+test('pending local Update rejects a bad retained-controller secret before updater or session start', async () => {
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
+  const appDirectory = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'astrid-pinokio-bad-token-'));
+  const root = path.join(appDirectory, 'app', 'astrid');
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(root), 'install-mode.json'), JSON.stringify({ schema_version: 1, mode: 'local' }));
+  fs.writeFileSync(path.join(root, 'update-transaction.json'), JSON.stringify({
+    step: 'recovering', transaction_context: { owner: 'local-update' },
+  }));
+  let updating = false;
+  let controller;
+  try {
+    controller = await createController(root, async () => ({ ok: true }), { localUpdate: {
+      isUpdating: () => updating,
+      begin: async () => { updating = true; return { updating: true }; },
+    } });
+    const record = JSON.parse(fs.readFileSync(path.join(root, CONTROL_FILE), 'utf8'));
+    fs.writeFileSync(path.join(root, CONTROL_FILE), JSON.stringify({ ...record, token: 'b'.repeat(64) }));
+    const app = library.createApp({ platform: 'linux', appDirectory, environment: {},
+      processAlive: (pid) => pid === record.pid,
+      sessionReadyCheck: async () => false,
+      pause: async (ms) => { clock += ms; },
+      startSessionForUpdate: async () => assert.fail('authentication failure must not start a session'),
+    });
+    let updaterCalled = false;
+    app.runLocalUpdate = async () => { updaterCalled = true; };
+    const script = await load('pinokio/update.js', app)({}, {});
+    await assert.rejects(script.run[0].method({}, () => {}), /Pinokio update request failed/);
+    assert.equal(updaterCalled, false);
+    assert.equal(updating, false);
+  } finally {
+    Date.now = originalNow;
+    await controller?.close();
+    fs.rmSync(appDirectory, { recursive: true, force: true });
+  }
+});
+
+test('fully-local Update treats a dead controller receipt as stale and lets runSession replace it', async () => {
+  const base = fakeApp('linux', '', 'local');
+  let starts = 0;
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => {
+      if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' });
+      if (file.endsWith('pinokio-control.json')) return JSON.stringify({ schema: 1, pid: 1000000, port: 19000, token: 'a'.repeat(64) });
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    }, existsSync: () => false },
+    processAlive: () => false,
+    sessionReadyCheck: async () => ++starts > 1, pause: async () => {},
+    startSessionForUpdate: async () => {},
+  });
+  await app.ensureLocalSessionForUpdate({}, () => {});
+  assert.equal(starts, 2);
+});
+
+test('ready fully-local Update reuses the live Pinokio controller and does not create another session', async () => {
+  const base = fakeApp('linux', '', 'local');
+  const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
+    filesystem: { readFileSync: (file) => {
+      if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' });
+      if (file.endsWith('pinokio-control.json')) return JSON.stringify({ schema: 1, pid: 123, port: 19000, token: 'a'.repeat(64) });
+      throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+    }, existsSync: () => false },
+    processAlive: () => true, sessionReadyCheck: async () => true,
+    startSessionForUpdate: async () => assert.fail('must reuse the live session'),
+  });
+  assert.deepEqual(plain(await app.ensureLocalSessionForUpdate({}, () => {})), { started: false, ready: true });
 });
 
 test('hosted Update refuses at read-only preflight before the launcher pull', async () => {
@@ -299,7 +694,7 @@ test('Update performs only installed-CLI recovery before any new launcher or man
   assert.equal(invoked, undefined, 'an out-of-root candidate must not be executed');
 });
 
-test('local Update runs the read-only refusal gate before editor pull and installer mutation', async () => {
+test('local Update runs the read-only refusal gate before calling the App updater', async () => {
   const base = fakeApp('linux', '', 'local');
   const app = library.createApp({ platform: 'linux', appDirectory: base.APP_DIR, environment: {},
     filesystem: { readFileSync: (file) => { if (file.endsWith('install-mode.json')) return JSON.stringify({ schema_version: 1, mode: 'local' }); throw Object.assign(new Error('absent'), { code: 'ENOENT' }); }, existsSync: () => false },
@@ -460,20 +855,20 @@ test('installer record selects authoritative Python, data root, Node and npm; no
 });
 
 function sessionHarness({ platform = 'darwin', buildCode = 0, dependencyCode = 0, occupied = false, earlyExit = false,
-  operationId, discoveredOperationId = operationId } = {}) {
+  externalHealthy = false } = {}) {
   const signals = new EventEmitter();
   const log = [];
   let pid = 5000;
   let statusCount = 0;
   const active = new Map();
-  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', npx: '/pinned/npx-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: operationId ? { ASTRID_INSTALLER_OPERATION_ID: operationId } : {} };
+  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', npx: '/pinned/npx-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: {} };
   function close(child, code = 0) { active.delete(child.pid); child.emit('close', code, null); }
   function spawnProcess(command, args, options) {
     const child = new EventEmitter(); child.pid = ++pid; child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
     log.push({ command, args, options, pid }); active.set(pid, child);
     queueMicrotask(() => {
       if (command.endsWith('taskkill.exe')) { const target = active.get(Number(args[1])); if (target) close(target); close(child); }
-      else if (args.includes('status')) { const healthy = statusCount++ > 0; child.stdout.emit('data', JSON.stringify({ support: { healthy }, health: { status: 'ok' }, discovery: { runtime_instance_id: 'instance', active_realm: 'realm', ...(discoveredOperationId ? { installer_operation_id: discoveredOperationId } : {}) } })); close(child, healthy ? 0 : 1); }
+      else if (args.includes('status')) { const healthy = externalHealthy ? statusCount++ === 0 : statusCount++ > 0; child.stdout.emit('data', JSON.stringify({ support: { healthy }, health: { status: 'ok', runtime_instance_id: 'instance' }, discovery: { runtime_instance_id: 'instance', active_realm: 'realm' } })); close(child, healthy ? 0 : 1); }
       else if (args.includes('ci')) close(child, dependencyCode);
       else if (args.includes('--build')) close(child, buildCode);
       else if (earlyExit && (command.endsWith('/run') || command.endsWith('cmd.exe'))) close(child, 7);
@@ -485,11 +880,17 @@ function sessionHarness({ platform = 'darwin', buildCode = 0, dependencyCode = 0
     openController: async () => ({ close: async () => {} }),
     gracefulDown: async (spec) => {
       log.push({ down: spec });
-      const runtime = log.find((call) => call.command?.endsWith('/run') || call.command?.endsWith('cmd.exe'));
+      const runtime = [...log].reverse().find((call) => (call.command?.endsWith('/run') || call.command?.endsWith('cmd.exe')) && active.has(call.pid));
       const child = runtime && active.get(runtime.pid);
       if (child) close(child);
     },
     portOpen: async () => occupied, pause: async () => {}, killProcess: (group, signal) => { log.push({ group, signal }); const child = active.get(-group); if (child) close(child); } } };
+}
+
+function selectedSessionInstall(version, installed) {
+  const root = `/astrid/versions/${version}`;
+  return { ...installed, node: `${root}/node`, npm: `${root}/npm-cli.js`, npx: `${root}/npx-cli.js`,
+    python: `${root}/python`, profile: `${root}/profile.json`, record: { root }, env: { ...installed.env } };
 }
 
 test('temporary build Runtime cleanup: success, build failure and npm failure on POSIX and Windows', async () => {
@@ -578,9 +979,131 @@ test('local update preparation builds before preview and announces READY under o
   assert.equal(typeof stop, 'function');
 });
 
+test('Pinokio local update callbacks retain the session owner while restarting and verifying the selected Runtime', async () => {
+  const h = sessionHarness({ platform: 'linux' });
+  let localUpdate;
+  let handoff;
+  let ready = false;
+  const session = runSession({ ...h.options, action: 'serve', mode: 'local',
+    filesystem: { readFileSync: () => 'candidate-v2' },
+    resolveInstallation: async (version) => selectedSessionInstall(version, h.options.installed),
+    openController: async (_root, _stop, options) => { localUpdate = options.localUpdate; return { close: async () => {} }; },
+    request: async (url) => url.endsWith('/runtime-config/v1/workspace.json')
+      ? { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }
+      : { ok: true, status: 200 },
+    output: (line) => {
+      assert.equal(line, 'ASTRID_PINOKIO_READY'); ready = true;
+      handoff = (async () => {
+        assert.deepEqual(await localUpdate.begin(), { updating: true });
+        await h.options.gracefulDown({ command: '/pinned/python', args: ['down'] });
+        assert.deepEqual(await localUpdate.runtime({ version: 'candidate-v2' }),
+          { version: 'candidate-v2', ready: true });
+        assert.deepEqual(await localUpdate.end(), { updating: false, ready: true });
+        const candidate = h.log.findLast((item) => item.command?.endsWith('/run'));
+        assert.equal(candidate.options.env.ASTRID_INSTALLER_OPERATION_ID, undefined);
+        h.signals.emit('SIGTERM');
+      })();
+    },
+  });
+  await session;
+  await handoff;
+  assert.equal(ready, true);
+  assert.ok(h.log.some((item) => item.command === '/astrid/versions/candidate-v2/python' && item.args.includes('status')));
+  assert.equal(h.active.size, 0);
+});
+
+test('fresh-controller recovery lets the existing App launcher start Runtime before Pinokio normal readiness', async () => {
+  const h = sessionHarness({ platform: 'linux' });
+  let localUpdate;
+  let work;
+  const baseSpawn = h.options.spawnProcess;
+  h.options.spawnProcess = (command, args, options) => {
+    const child = baseSpawn(command, args, options);
+    if (args.includes('--preview')) work = (async () => {
+      assert.deepEqual(await localUpdate.runtime({ version: 'recovered-v2' }),
+        { version: 'recovered-v2', ready: true });
+      assert.deepEqual(await localUpdate.end(), { updating: false, ready: true });
+    })();
+    return child;
+  };
+  const started = [];
+  await runSession({ ...h.options, action: 'serve', mode: 'local', recoverLocalUpdate: true,
+    filesystem: { readFileSync: () => 'recovered-v2' },
+    resolveInstallation: async (version) => selectedSessionInstall(version, h.options.installed),
+    openController: async (_root, _stop, options) => { localUpdate = options.localUpdate; return { close: async () => {} }; },
+    request: async (url) => url.endsWith('/runtime-config/v1/workspace.json')
+      ? { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }
+      : { ok: true, status: 200 },
+    output: (line) => {
+      if (line !== 'ASTRID_PINOKIO_READY') return;
+      started.push('ready'); queueMicrotask(() => h.signals.emit('SIGTERM'));
+    },
+  });
+  await work;
+  const previewIndex = h.log.findIndex((item) => item.args?.includes('--preview'));
+  const runtimeIndex = h.log.findIndex((item) => item.command?.endsWith('/run'));
+  assert.ok(previewIndex >= 0 && runtimeIndex > previewIndex, 'the old App launcher requests Runtime through the retained owner');
+  assert.ok(h.log.some((item) => item.command === '/astrid/versions/recovered-v2/python' && item.args.includes('status')));
+  assert.deepEqual(started, ['ready']);
+  assert.equal(h.active.size, 0);
+});
+
+test('staged-only local recovery restarts selected stable Runtime when release-app arrives without pinokio-start', async () => {
+  const h = sessionHarness({ platform: 'linux' });
+  const version = 'stable-v1';
+  const journal = JSON.stringify({ format: 'astrid-install-update/v1', step: 'complete',
+    transaction_context: { owner: 'local-update' } });
+  let handoff;
+  let ready = false;
+  const filesystem = { readFileSync(file) {
+    if (file.endsWith('/current')) return `${version}\n`;
+    if (file.endsWith('/update-transaction.json')) return journal;
+    throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+  } };
+  const session = runSession({ ...h.options, action: 'serve', mode: 'local', recoverLocalUpdate: true,
+    filesystem, resolveInstallation: async (selected) => selectedSessionInstall(selected, h.options.installed),
+    openController: async (_root, _stop, options) => {
+      handoff = options.localUpdate.end();
+      await handoff;
+      return { close: async () => {} };
+    },
+    request: async () => ({ ok: true, status: 200, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance', realmId: 'realm' }) }),
+    output: (line) => {
+      assert.equal(line, 'ASTRID_PINOKIO_READY'); ready = true;
+      queueMicrotask(() => h.signals.emit('SIGTERM'));
+    },
+  });
+  await session;
+  assert.deepEqual(await handoff, { updating: false, ready: true });
+  const runtime = h.log.find((item) => item.command?.endsWith('/run'));
+  assert.ok(runtime, 'the retained session starts the old stable Runtime');
+  assert.equal(runtime.options.env.ASTRID_INSTALLER_OPERATION_ID, undefined);
+  assert.ok(h.log.some((item) => item.command === `/astrid/versions/${version}/python` && item.args.includes('status')));
+  assert.equal(ready, true);
+  assert.equal(h.active.size, 0);
+});
+
+test('staged-only local recovery refuses to adopt an already healthy external Runtime', async () => {
+  const h = sessionHarness({ platform: 'linux', externalHealthy: true });
+  const filesystem = { readFileSync(file) {
+    if (file.endsWith('/current')) return 'stable-v1\n';
+    if (file.endsWith('/update-transaction.json')) return JSON.stringify({ step: 'complete', transaction_context: { owner: 'local-update' } });
+    throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+  } };
+  await assert.rejects(runSession({ ...h.options, action: 'serve', mode: 'local', recoverLocalUpdate: true,
+    filesystem, resolveInstallation: async (version) => selectedSessionInstall(version, h.options.installed),
+    openController: async (_root, _stop, options) => { await options.localUpdate.end(); return { close: async () => {} }; },
+    output: () => assert.fail('must not publish readiness while an external Runtime is active'),
+  }), /already healthy outside this Pinokio session/);
+  assert.equal(h.log.some((item) => item.command?.endsWith('/run')), false);
+  assert.equal(h.log.some((item) => item.down), false);
+  assert.equal(h.active.size, 0);
+});
+
 test('session CLI accepts only the boolean editor preparation option', () => {
-  assert.deepEqual(parseSessionOptions(), { prepareEditor: false });
-  assert.deepEqual(parseSessionOptions('{"prepareEditor":true}'), { prepareEditor: true });
+  assert.deepEqual(parseSessionOptions(), { prepareEditor: false, recoverLocalUpdate: false });
+  assert.deepEqual(parseSessionOptions('{"prepareEditor":true}'), { prepareEditor: true, recoverLocalUpdate: false });
+  assert.deepEqual(parseSessionOptions('{"recoverLocalUpdate":true}'), { prepareEditor: false, recoverLocalUpdate: true });
   for (const value of ['null', '[]', '{"root":"/elsewhere"}', '{"action":"stop"}', '{"prepareEditor":"yes"}', '{']) {
     assert.throws(() => parseSessionOptions(value), /Invalid session options/);
   }
@@ -603,18 +1126,17 @@ test('local update build failures never publish READY and drain the provisional 
 });
 
 test('transaction-bound serve requires the exact discovery operation id before readiness', async () => {
-  const operationId = 'a'.repeat(32);
-  const matched = sessionHarness({ platform: 'linux', operationId });
+  const matched = sessionHarness({ platform: 'linux' });
   let ready = false;
   await runSession({ ...matched.options, action: 'serve', mode: 'backend',
     request: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1' }) }),
     output: (line) => { ready = line === 'ASTRID_PINOKIO_READY'; queueMicrotask(() => matched.signals.emit('SIGTERM')); },
   });
   const runtime = matched.log.find((item) => item.command?.endsWith('/run'));
-  assert.equal(runtime.options.env.ASTRID_INSTALLER_OPERATION_ID, operationId);
+  assert.equal(runtime.options.env.ASTRID_INSTALLER_OPERATION_ID, undefined);
   assert.equal(ready, true);
 
-  const mismatch = sessionHarness({ platform: 'linux', operationId, discoveredOperationId: 'b'.repeat(32) });
+  const mismatch = sessionHarness({ platform: 'linux' });
   await assert.rejects(runSession({ ...mismatch.options, action: 'serve', mode: 'backend', startupDeadlineMs: 0,
     output: (line) => assert.notEqual(line, 'ASTRID_PINOKIO_READY'),
   }), /didn't start in time/);
@@ -829,7 +1351,8 @@ test('app updater supervisor remains controllable outside the native Start scrip
   const base = fakeApp('darwin');
   const order = [];
   const app = library.createApp({ platform: 'darwin', appDirectory: base.APP_DIR, environment: {},
-    filesystem: { readFileSync: () => JSON.stringify({ schema: 1, pid: 123, port: 9876 }) },
+    filesystem: { readFileSync: () => JSON.stringify({ schema: 1, pid: 123, port: 9876, token: 'a'.repeat(64) }) },
+    processAlive: () => true,
     lifecycle: { preflightStop: async () => order.push('preflight'), requestGracefulStop: async () => order.push('grace'), waitForInstallerLock: async () => order.push('lock') },
   });
   assert.equal(app.hasOwnedSupervisor(), true);
