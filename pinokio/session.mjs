@@ -8,10 +8,10 @@ import app from './lib.js';
 import policy from './environment.js';
 import { bounded, createController, DOWN_MS, preflightStop, runCommand } from './lifecycle.mjs';
 
-export function installationFiles(root, { platform = process.platform, filesystem = fs } = {}) {
+export function installationFiles(root, { platform = process.platform, filesystem = fs, versionOverride } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
   const read = (file) => JSON.parse(filesystem.readFileSync(file, 'utf8'));
-  const version = filesystem.readFileSync(p.join(root, 'current'), 'utf8').trim();
+  const version = versionOverride ?? filesystem.readFileSync(p.join(root, 'current'), 'utf8').trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version)) throw new Error('Invalid Astrid version pointer.');
   const versionRoot = p.join(root, 'versions', version);
   const record = read(p.join(versionRoot, 'version.json'));
@@ -31,7 +31,7 @@ export function installationFiles(root, { platform = process.platform, filesyste
   for (const file of [node, npm, npx, record.python, record.profile]) {
     if (!filesystem.existsSync(file)) throw new Error(`Astrid installed file is missing: ${file}`);
   }
-  return { node, npm, npx, python: record.python, profile: record.profile, data: install.data_root, env: record.env };
+  return { node, npm, npx, python: record.python, profile: record.profile, data: install.data_root, env: record.env, record };
 }
 
 export function installation(root, { platform = process.platform, filesystem = fs, environment = process.env,
@@ -84,6 +84,49 @@ export function commands(root, editor, mode, installed, platform = process.platf
 }
 const environmentCmd = (env) => env.ComSpec || env.COMSPEC || path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
 
+export function runtimeStatusHealthy(status, operationId) {
+  return status?.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok'
+    && (!operationId || (status.discovery?.installer_operation_id === operationId
+      && Boolean(status.discovery?.active_realm) && Boolean(status.discovery?.runtime_instance_id)));
+}
+
+export async function localPreviewReady(discovery, { request = fetch } = {}) {
+  try {
+    const response = await request('http://127.0.0.1:5180/tools/video-editor', { signal: AbortSignal.timeout(2500) });
+    if (!response.ok) return false;
+    const config = await request('http://127.0.0.1:5180/runtime-config/v1/workspace.json', { signal: AbortSignal.timeout(2500) });
+    const binding = await config.json();
+    return config.ok && binding.schemaVersion === 1 && Boolean(discovery?.runtime_instance_id)
+      && Boolean(discovery?.active_realm)
+      && binding.runtimeInstanceId === discovery.runtime_instance_id && binding.realmId === discovery.active_realm;
+  } catch { return false; }
+}
+
+export async function localSessionReady({ root, editor, platform = process.platform,
+  installed = installation(root, { platform }), request = fetch, run = runCommand } = {}) {
+  try {
+    const operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
+    if (operationId !== undefined && (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId))) return false;
+    const statusOutput = await run(commands(root, editor, 'local', installed, platform).status,
+      { env: installed.env, cwd: root, timeoutMs: 5000 });
+    const status = JSON.parse(statusOutput);
+    if (!runtimeStatusHealthy(status, operationId)) return false;
+    return localPreviewReady(status.discovery, { request });
+  } catch { return false; }
+}
+
+export function parseSessionOptions(argument = '{}') {
+  let options;
+  try { options = JSON.parse(argument); }
+  catch { throw new Error('Invalid session options.'); }
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || Object.keys(options).some((key) => key !== 'prepareEditor')
+    || (Object.hasOwn(options, 'prepareEditor') && typeof options.prepareEditor !== 'boolean')) {
+    throw new Error('Invalid session options.');
+  }
+  return { prepareEditor: options.prepareEditor ?? false };
+}
+
 // On macOS a disappearing/zombie-only process group can report EPERM rather
 // than ESRCH. Ignore that only after ps confirms no live group members remain.
 export function signalGroup(pid, signal, { killProcess = process.kill.bind(process),
@@ -108,10 +151,16 @@ export async function runSession({ action, root, editor, mode, platform = proces
   portOpen = app.tcpPortOpen, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   killProcess = process.kill.bind(process), signals = process, output = console.log,
   startupDeadlineMs = 180_000, openController = createController, gracefulDown = runCommand,
-  limit = bounded } = {}) {
+  limit = bounded, prepareEditor = false } = {}) {
   if (!['serve', 'build'].includes(action) || !['backend', 'local'].includes(mode)) throw new Error('Invalid Astrid session arguments.');
+  if (prepareEditor && (action !== 'serve' || mode !== 'local')) throw new Error('Editor preparation requires a local serve session.');
   const specs = commands(root, editor, mode, installed, platform);
   const env = { ...installed.env };
+  const operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
+  if (operationId !== undefined) {
+    if (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId)) throw new Error('Invalid installer transaction operation id.');
+    env.ASTRID_INSTALLER_OPERATION_ID = operationId;
+  }
   if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
   else delete env.ASTRID_APP_LOOPBACK_ORIGIN;
   const children = [];
@@ -174,7 +223,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (code !== 0) return false;
     try {
       const status = JSON.parse(item.stdout);
-      const healthy = status.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok';
+      const healthy = runtimeStatusHealthy(status, operationId);
       if (healthy) discovery = status.discovery;
       return healthy;
     } catch { return false; }
@@ -288,18 +337,16 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (action === 'build') {
       await checked(specs.build, { cwd: editor });
     } else {
+      if (prepareEditor) {
+        await checked(specs.dependencies, { cwd: editor });
+        await checked(specs.build, { cwd: editor });
+      }
       if (mode === 'local') editorItem = launch(specs.preview, { cwd: editor, persistent: true });
       const url = mode === 'local' ? 'http://127.0.0.1:5180/tools/video-editor' : app.DOOR_HEALTH_URL;
       await waitUntil(async () => {
+        if (mode === 'local') return localPreviewReady(discovery, { request });
         try {
           const response = await request(url, { signal: AbortSignal.timeout(2500), headers: mode === 'backend' ? { Origin: 'https://astrid.haus' } : {} });
-          if (mode === 'local') {
-            if (!response.ok) return false;
-            const config = await request('http://127.0.0.1:5180/runtime-config/v1/workspace.json', { signal: AbortSignal.timeout(2500) });
-            const binding = await config.json();
-            return config.ok && binding.schemaVersion === 1 && Boolean(discovery?.runtime_instance_id)
-              && binding.runtimeInstanceId === discovery.runtime_instance_id && binding.realmId === discovery.active_realm;
-          }
           const body = await response.json();
           return response.status === 200 && body.status === 'ok' && body.protocol === 'workspace.v1';
         } catch { return false; }
@@ -340,6 +387,12 @@ export async function runSession({ action, root, editor, mode, platform = proces
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [action, root, editor, mode] = process.argv.slice(2);
-  runSession({ action, root, editor, mode }).catch((error) => { console.error(`Astrid: ${error.message}`); process.exitCode = 1; });
+  const [action, root, editor, mode, options = '{}'] = process.argv.slice(2);
+  let parsed;
+  try { parsed = parseSessionOptions(options); }
+  catch {
+    console.error('Astrid: Invalid session options.'); process.exitCode = 1;
+  }
+  if (parsed) runSession({ action, root, editor, mode, prepareEditor: parsed.prepareEditor })
+    .catch((error) => { console.error(`Astrid: ${error.message}`); process.exitCode = 1; });
 }

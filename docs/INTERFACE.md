@@ -14,7 +14,7 @@ Pinokio seeds its generated `ENVIRONMENT` from `_ENVIRONMENT`. The launcher read
 
 Remote bootstrap commands download the script into a temporary directory before executing it. Ref commands download the manifest there too. POSIX uses `curl -fsSL URL -o FILE` and `sh FILE`; Windows uses TLS 1.2, `Invoke-WebRequest -UseBasicParsing URL -OutFile FILE`, and `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath FILE)))`. The surrounding POSIX EXIT trap / PowerShell finally removes the temporary directory.
 
-Every installer invocation passes `--root R --managed-by pinokio`. Hosted Update uses `--update-app`: one installer process stages the candidate while Astrid runs and owns the short stop/switch/start sequence. The existing workspace is retained; a changed storage schema refuses before stopping and directs the user to the full migration updater. A supervisor started by the updater retains the ordinary authenticated control endpoint, so the menu can open, update, and stop it. Update adds `--update`. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
+Every installer invocation passes `--root R --managed-by pinokio`. Both Update choices call the shared C2 transaction through the ordinary `install` dispatch, which selects a new release or repairs the current one. Hosted Update selects the remote manifest; fully local Update pulls the existing editor checkout and passes its manifest. The transaction stages and validates the candidate before Runtime's final fenced stop, then starts and verifies it through the existing foreground session. Update returns after readiness; the session remains openable and stoppable. The explicit CLI `--update` remains the hidden forced-restage action. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
 
 The current POSIX bootstrap honors a supplied manifest before preparing tool/source pins, so it can run from raw GitHub without an astrid.haus manifest request. It uses absolute public uv/GitHub download URLs, not a URL relative to its own script. The source smoke runs its actual bytes with fake curl, uv and package operations. Windows has the equivalent manifest-selection logic; its native execution remains unqualified here.
 
@@ -29,7 +29,7 @@ The shell is Bash on macOS/Linux and PowerShell on Windows. `B(action)` below me
 | `install.js` | Port preflight; create `A/app`; `B(install)`; save `backend` | — |
 | `install-local.js` | — | If re-invoked on an existing install/session, safe Stop first; port preflight; create `A/app`; clone or validate/pull editor; `L(install)`; temporary build session; save `local` |
 | `add-local.js` | Await Stop and lock release; port preflight; clone or validate/pull editor; `L(update)`; temporary build session; save `local` | Refuses |
-| `update.js` | Read-only Runtime stop preflight; pull launcher; `B(update-app)` retains its existing preparation, fenced stop/switch/start, and recovery behavior | Await Stop and lock release; port preflight; validate/pull editor; `L(update)`; temporary build session |
+| `update.js` | Read-only Runtime stop preflight; pull launcher; `B(install)` shared transaction, which stages before its final fenced stop and starts/verifies the foreground session | Read-only Runtime stop preflight; pull launcher; validate/pull editor; `L(install)` shared transaction with the editor manifest; the existing foreground session builds, starts preview, and waits for readiness |
 | `start.js` | Port preflight; foreground hosted session; publish hosted URL after readiness | Port preflight; foreground local session; publish local URL after readiness |
 | `stop.js` | Preflight, await Runtime's final fenced stop, then stop the Start shell and verify the per-user installer lock | Same adapter ordering; native refusal veto remains an upstream dependency |
 | `reset.js` | Await Stop and lock release; recursively remove only `A/app` | Same; no bootstrap/uninstaller |
@@ -114,12 +114,14 @@ After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done:
 | Installed backend, stopped | Start; Update; Switch to fully local; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Start running, no published URL | Starting Astrid…; Stop |
-| Ready owned Start | Open Astrid; Update and restart (hosted mode); Stop |
+| Ready owned Start | Open Astrid; Update and restart (hosted) or Update (local); Stop |
+| Detached owned local session, ready | Open Astrid; Update; Stop |
+| Detached owned local session, not ready | Starting Astrid…; Stop |
 | Install/add/update/reset/uninstall/delete/stop active | Operation status only |
 | External Astrid on 17340 | Explanation; Open Astrid only (hosted URL) |
 | Other program on 17340 | Conflict message only |
 
-Start is the default stopped menu item. Hosted Open displays `https://astrid.haus/?connect=1` in Pinokio's popout panel; its relative href keeps Pinokio's default-selection scheme check on the app page, and `target_full` carries the hosted URL. The panel opens the browser only after a click. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. The owned running menu reads the published URL and does not synthesize Open while startup is pending; once ready, Open Astrid is the default menu item.
+Start is the default stopped menu item. Hosted Open displays `https://astrid.haus/?connect=1` in Pinokio's popout panel; its relative href keeps Pinokio's default-selection scheme check on the app page, and `target_full` carries the hosted URL. The panel opens the browser only after a click. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. A detached local session is shown as ready only after Runtime status, preview HTTP, and workspace instance/realm binding checks succeed; it does not probe the hosted door port. The owned running menu reads the published URL and does not synthesize Open while startup is pending; once ready, Open Astrid is the default menu item.
 
 ## Stop hook, graceful shutdown and installer lock
 
@@ -162,11 +164,11 @@ An owned Runtime child that has positively exited can leave editor/controller re
 
 The control request has a 45-second deadline. The preflight and final `down` have a 25-second process deadline. A failed preflight or `down` leaves the editor, Runtime, controller, and remaining session processes available for retry; Astrid does not invoke Pinokio's forced cleanup itself.
 
-The Stop menu, local Update, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) call the same `stopOwnedStart` function:
+The Stop menu, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) call the same `stopOwnedStart` function:
 
 1. Run the read-only preflight, then request the controller's final Runtime `down` and retain its result.
 2. Call `kernel.api.stop` only after successful Runtime shutdown. Busy, unknown, and timeout errors return before native tree cleanup or lock checks.
-3. Wait for the actual installer lock after successful stop, even when Start was already idle. Maintenance steps do not pull, bootstrap, build, remove files, or save a mode after a refusal. Hosted Update performs its read-only preflight before pulling the launcher, then retains the existing app updater preparation/relaunch path and its final Runtime fence.
+3. Wait for the actual installer lock after successful stop, even when Start was already idle. These maintenance steps do not pull, bootstrap, build, remove files, or save a mode after refusal. Update runs a read-only preflight before launcher/editor preparation; its shared installer transaction performs candidate staging before the final Runtime fence.
 
 If the controller is unresponsive, its request fails closed. Astrid leaves the session intact and permits another Stop request. Lock verification has a 10-second poll budget and 12-second subprocess deadline after a successful shutdown. These are production operation bounds; no test has a harness timeout.
 
