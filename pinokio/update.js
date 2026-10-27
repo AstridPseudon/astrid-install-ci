@@ -12,9 +12,9 @@ module.exports = async () => {
   }
   const mode = app.readInstallMode();
   if (!mode) throw new Error("Astrid isn't fully installed. Choose Reset, then install again.");
-  // This is an early, read-only refusal check. C2 stages and validates its
-  // candidate before asking Runtime's C1 fence to stop the current owner.
-  const steps = [app.customStep(app.preflightStop), app.gitShellStep(app.launcherPullMessage())];
+  // The shared installer transaction preflights before staging, then uses
+  // Runtime down as the final stop authority after candidate validation.
+  const steps = [app.gitShellStep(app.launcherPullMessage())];
   if (mode === 'local') {
     if (!app.validateExistingEditorCheckout()) throw new Error("Astrid's editor files are missing. Choose Reset, then install again.");
     steps.push(

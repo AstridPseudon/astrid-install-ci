@@ -1,4 +1,4 @@
-// Authenticated control of this launcher's supervisor; no ambient Runtime down.
+// Authenticated session stop; controllerless maintenance uses the installed Runtime down.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -43,52 +43,20 @@ export function runCommand(spec, { env, cwd, timeoutMs = DOWN_MS, execute = exec
       });
   });
 }
-export async function preflightStop(rootOrInstalled, { timeoutMs = DOWN_MS, run = runCommand,
-  filesystem = fs, platform = process.platform, environment = process.env, appDirectory } = {}) {
-  const installed = typeof rootOrInstalled === 'string'
-    ? (await import('./session.mjs')).installation(rootOrInstalled, { filesystem, platform, environment, appDirectory })
-    : rootOrInstalled;
-  if (!installed?.python || !installed.data) throw new Error('Installed Runtime paths are unavailable for a safe stop check.');
-  const code = [
-    'import json,sys',
-    'from pathlib import Path',
-    'from astrid_runtime.paths import RuntimePaths',
-    'from astrid_runtime.bootstrap import BootstrapError,preflight_stop',
-    'try:',
-    ' report=preflight_stop(RuntimePaths.current(data_root=Path(sys.argv[1])))',
-    ' print(json.dumps(report))',
-    'except BootstrapError as error:',
-    ' print(json.dumps({"message":str(error),"details":error.details}))',
-    ' raise SystemExit(2)',
-    'except Exception as error:',
-    ' print(json.dumps({"message":str(error)}))',
-    ' raise SystemExit(2)',
-  ].join('\n');
-  let output;
-  try {
-    output = await run({ command: installed.python, args: ['-I', '-c', code, installed.data] },
-      { env: installed.env, cwd: installed.data, timeoutMs });
-  } catch (error) {
-    const raw = String(error.message || error).replace(/^Command failed:\s*/, '');
-    try {
-      const refusal = JSON.parse(raw);
-      const preserved = new Error(refusal.message || 'Runtime stop preflight refused.');
-      if (refusal.details !== undefined) preserved.details = refusal.details;
-      throw preserved;
-    } catch (parseError) {
-      if (parseError instanceof SyntaxError) throw error;
-      throw parseError;
-    }
+// Maintenance without a live session still needs C1's actual fenced down.
+// The installer lock alone cannot establish that durable work is idle.
+export async function stopRuntime(root, { filesystem = fs, platform = process.platform,
+  environment = process.env, appDirectory, installed, run = runCommand, timeoutMs = DOWN_MS } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  if (!filesystem.existsSync(p.dirname(root))) return;
+  const session = await import('./session.mjs');
+  if (!installed) {
+    installed = session.installationFiles(root, { filesystem, platform });
+    installed.env = policy.buildEnvironment({ appDirectory: appDirectory || p.resolve(root, '..', '..'),
+      platform, environment, recordEnv: installed.env });
   }
-  let report;
-  try { report = JSON.parse(output); }
-  catch { throw new Error('Runtime stop preflight returned an unreadable report.'); }
-  if (report?.safe !== true) {
-    const error = new Error(report?.message || report?.headline || 'Runtime stop preflight refused.');
-    error.details = report;
-    throw error;
-  }
-  return report;
+  await run(session.commands(root, '', 'backend', installed, platform).down,
+    { env: installed.env, cwd: root, timeoutMs });
 }
 export async function createController(root, stop, { filesystem = fs, pid = process.pid,
   killProcess = process.kill.bind(process), localUpdate = {} } = {}) {

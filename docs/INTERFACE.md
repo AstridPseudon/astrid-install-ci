@@ -29,7 +29,7 @@ The shell is Bash on macOS/Linux and PowerShell on Windows. `B(action)` below me
 | `install.js` | Port preflight; create `A/app`; `B(install)`; save `backend` | — |
 | `install-local.js` | — | If re-invoked on an existing install/session, safe Stop first; port preflight; create `A/app`; clone or validate/pull editor; `L(install)`; temporary build session; save `local` |
 | `add-local.js` | Await Stop and lock release; port preflight; clone or validate/pull editor; `L(update)`; temporary build session; save `local` | Refuses |
-| `update.js` | Read-only Runtime stop preflight; pull launcher; `B(install)` shared transaction, which stages before its final fenced stop and starts/verifies the foreground session | Read-only Runtime stop preflight; pull launcher; start/reuse the existing local session; run the editor checkout's `npm run update` through its live App launcher |
+| `update.js` | Pull launcher; `B(install)` shared transaction, which stages before its final fenced stop and starts/verifies the foreground session | Pull launcher; start/reuse the existing local session; run the editor checkout's `npm run update` through its live App launcher |
 | `start.js` | Port preflight; foreground hosted session; publish hosted URL after readiness | Port preflight; foreground local session; publish local URL after readiness |
 | `stop.js` | Preflight, await Runtime's final fenced stop, then stop the Start shell and verify the per-user installer lock | Same adapter ordering; native refusal veto remains an upstream dependency |
 | `reset.js` | Await Stop and lock release; recursively remove only `A/app` | Same; no bootstrap/uninstaller |
@@ -94,7 +94,7 @@ Local sessions additionally set `ASTRID_APP_LOOPBACK_ORIGIN=off`. Hosted session
 
 The editor's `--build` requires a live Runtime and does not run `up`. A build session installs npm dependencies, starts one foreground Runtime with its door off, waits for Runtime status, builds, then invokes the installed Runtime’s `down` before draining its owned children. npm/build failures and interruption also enter cleanup. If cleanup is refused as busy or unknown, the supervisor and controller stay available for a successful retry before the failed build returns. It never publishes an Open URL or switches mode on a failed shell step.
 
-Normal local Start runs the foreground Runtime first, waits for status, then starts preview. `dev-local-workspace` validates discovery/credentials/schema/realm and attaches before starting its proxy/Vite server. `ASTRID_START_COMMAND` is not a mechanism for starting or attaching to Runtime. The editor can call `astrid-runtime up` itself if it loses discovery; the supervisor watches its owned Runtime and tears down the editor if that process exits. That custody race is a native qualification item.
+Normal local Start runs the foreground Runtime first, waits for status, then starts preview. `dev-local-workspace` validates discovery/credentials/schema/realm and attaches before starting its proxy/Vite server. `ASTRID_START_COMMAND` is not a mechanism for starting or attaching to Runtime. The editor can call `astrid-runtime up` itself if it loses discovery; the supervisor watches its owned Runtime and requires successful Runtime `down` before tearing down the editor after that process exits. That custody race is a native qualification item.
 
 ## Readiness and menu
 
@@ -145,7 +145,7 @@ During a fully local App update the same controller also accepts `/local-update-
 
 ### Exact stop sequence
 
-Before that final fenced `down`, Pinokio invokes the installed Python with `-I -c` to call the read-only `astrid_runtime.bootstrap.preflight_stop(RuntimePaths.current(data_root=...))`. It uses the same installed version, environment and recorded data root. Missing API, unreadable result, timeout, or unsafe report is a refusal. This report is an early check only; `down` remains the sole stop authority. The final `down` uses:
+Runtime `down` is the only Pinokio stop check. Its read-only admission and final C1 fence run inside Runtime. Pinokio uses the installed version, environment and recorded data root, and preserves the CLI JSON error message and details through the controller. The command is:
 
 ```text
 <record.python> -I -m astrid_runtime down --profile astrid --data-root <install.data_root> --source-manifest <record.profile> --json
@@ -155,22 +155,22 @@ The Python is normally `R/versions/<current>/py/bin/python` on macOS/Linux and `
 
 | Phase | macOS / Linux | Windows |
 | --- | --- | --- |
-| Runtime | Run read-only preflight, then execute the final fenced `down`, bounded by 25 seconds. Wait up to 5 seconds for the owned foreground child to exit. | Same Python argument array and bounds. The foreground child is the owned `cmd.exe /d /s /c` / `run.cmd` tree. |
+| Runtime | Execute the final fenced `down`, bounded by 25 seconds. Wait up to 5 seconds for the owned foreground child to exit. | Same Python argument array and bounds. The foreground child is the owned `cmd.exe /d /s /c` / `run.cmd` tree. |
 | Local editor and remaining owned children | Only after `down` succeeds, terminate the editor/temporary children and wait for them to exit. | Only after `down` succeeds, use `taskkill /T /F` for the owned child tree. |
 | Refusal | Busy, unknown, unreadable, or timed-out shutdown returns failure before editor termination, Runtime termination, controller close, forced tree cleanup, or lock cleanup. The same controller remains available for retry. | Same refusal behavior in the Astrid adapter. Native Pinokio may still kill after swallowing the error; the upstream veto dependency is unresolved. |
 | Maintenance/Stop menu lock gate | Execute the installed Python lock verifier below; wait for the actual per-user lock to become available. | Same verifier, using Runtime's Windows lock implementation. |
 
 When a Runtime child exists, Stop does not signal it directly, including before readiness. Requests share an in-flight shutdown promise; a failed request clears that promise so the same session can retry. Successful repeated requests are idempotent.
 
-An owned Runtime child that has positively exited can leave editor/controller remnants. After a safe read-only report, the supervisor cleans up those remnants without another `down` or any Runtime signal. This preserves the hosted updater's existing handoff, which stops Runtime before requesting controller cleanup. Unexpected child failures still report failure. A completed `down` is retained only within that same supervisor so an editor-cleanup retry does not issue another stop.
+An owned Runtime child that has positively exited can leave editor/controller remnants. The supervisor requires an idempotent `down` before cleaning up those remnants, since child exit alone cannot prove durable work is idle or exclude a replacement owner. The hosted updater releases Runtime's C1 fence before requesting controller cleanup, so the supervisor's `down` is never nested inside that fence. Unexpected child failures still report failure. A completed `down` is retained only within that same supervisor so an editor-cleanup retry does not issue another stop.
 
-The control request has a 45-second deadline. The preflight and final `down` have a 25-second process deadline. A failed preflight or `down` leaves the editor, Runtime, controller, and remaining session processes available for retry; Astrid does not invoke Pinokio's forced cleanup itself.
+The control request has a 45-second deadline. Runtime `down` has a 25-second process deadline. A failed `down` leaves the editor, Runtime, controller, and remaining session processes available for retry; Astrid does not invoke Pinokio's forced cleanup itself.
 
 The Stop menu, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) call the same `stopOwnedStart` function:
 
-1. Run the read-only preflight, then request the controller's final Runtime `down` and retain its result.
+1. Request the controller's Runtime `down` and retain its result. Without a live controller, resolve and validate the selected installed version and run that Runtime's actual `down` before lock admission. Missing or incomplete installed records fail closed when program files exist.
 2. Call `kernel.api.stop` only after successful Runtime shutdown. Busy, unknown, and timeout errors return before native tree cleanup or lock checks.
-3. Wait for the actual installer lock after successful stop, even when Start was already idle. These maintenance steps do not pull, bootstrap, build, remove files, or save a mode after refusal. Update runs a read-only preflight before launcher/editor preparation; its shared installer transaction performs candidate staging before the final Runtime fence.
+3. Wait for the actual installer lock after successful stop, even when Start was already idle. These maintenance steps do not pull, bootstrap, build, remove files, or save a mode after refusal. Update delegates preflight and staging to the shared installer transaction, which stages before the final Runtime fence; pending-journal recovery runs before new launcher/editor pulls or manifest work.
 
 If the controller is unresponsive, its request fails closed. Astrid leaves the session intact and permits another Stop request. Lock verification has a 10-second poll budget and 12-second subprocess deadline after a successful shutdown. These are production operation bounds; no test has a harness timeout.
 

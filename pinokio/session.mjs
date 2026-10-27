@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import app from './lib.js';
 import policy from './environment.js';
-import { bounded, createController, DOWN_MS, preflightStop, runCommand } from './lifecycle.mjs';
+import { bounded, createController, DOWN_MS, runCommand } from './lifecycle.mjs';
 
 export function installationFiles(root, { platform = process.platform, filesystem = fs, versionOverride } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
@@ -148,7 +148,6 @@ export async function runSession({ action, root, editor, mode, platform = proces
   installed: initialInstalled = installation(root), resolveInstallation = () => installation(root, { platform, filesystem, environment: process.env }),
   spawnProcess = spawn, request = fetch,
   filesystem = fs,
-  checkStop = preflightStop,
   portOpen = app.tcpPortOpen, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   killProcess = process.kill.bind(process), signals = process, output = console.log,
   startupDeadlineMs = 180_000, openController = createController, gracefulDown = runCommand,
@@ -264,29 +263,16 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
       const errors = [];
-      // The Runtime's read-only report is an early refusal check. Runtime down
-      // repeats the check under its final fence and remains the stop authority.
+      // Even an exited child can leave durable busy work or a replacement
+      // publication. Only Runtime down can admit editor/controller cleanup.
       if (runtimeItem && !runtimeDown) {
         try {
-          await checkStop(installed, { timeoutMs: DOWN_MS });
-          if (runtimeItem.closed) {
-            if (!Number.isInteger(runtimeItem.exitCode) && !runtimeItem.exitSignal) {
-              throw new Error('Astrid Runtime exit has not been confirmed.');
-            }
-            // Hosted app_update.py already completed the fenced Runtime down
-            // before it asks this supervisor to release editor/controller state.
-            // A positively exited owned child plus the read-only idle report
-            // permits only remnant cleanup; never signal it or issue another down.
-            // Unexpected failures still propagate through the session's catch.
-          } else {
-            downInProgress = true;
-            await gracefulDown(specs.down, { env, cwd: root, timeoutMs: DOWN_MS });
-            await limit(runtimeItem.done, 5000, 'Runtime exit after down');
-          }
+          downInProgress = true;
+          await gracefulDown(specs.down, { env, cwd: root, timeoutMs: DOWN_MS });
+          if (!runtimeItem.closed) await limit(runtimeItem.done, 5000, 'Runtime exit after down');
           runtimeDown = true;
         } catch (error) {
           downInProgress = false;
-          if (runtimeItem.closed && !failure) fail(new Error('Astrid Runtime exited before its fenced stop completed.'));
           return { ok: false, errors: [error.message], ...(error.details !== undefined ? { details: error.details } : {}) };
         }
       }
@@ -360,6 +346,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
         delete env.ASTRID_INSTALLER_OPERATION_ID;
         if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
         discovery = undefined;
+        runtimeDown = false;
         runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
         await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime');
         return { version, ready: true };
@@ -399,6 +386,7 @@ export async function runSession({ action, root, editor, mode, platform = proces
           if (await runtimeHealthy(env)) {
             throw new Error('A Runtime is already healthy outside this Pinokio session. Stop that Runtime, then retry local recovery.');
           }
+          runtimeDown = false;
           runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
           await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime after local update recovery');
         }

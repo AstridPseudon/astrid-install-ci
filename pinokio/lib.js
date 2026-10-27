@@ -349,25 +349,21 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     const operations = lifecycle || await import('./lifecycle.mjs');
     const options = { filesystem, platform, environment, appDirectory: APP_DIR };
     const errors = [];
-    if (active || hasOwnedSupervisor() || filesystem.existsSync(PROGRAMS_DIR)) {
-      try { await operations.preflightStop(BACKEND_ROOT, options); }
-      catch (error) {
-        errors.push(error);
-      }
-    }
-    if (active || hasOwnedSupervisor()) {
-      // The controller's Runtime down is still the final authority and must
-      // succeed before Pinokio may close the session.
-      if (errors.length === 0) try {
+    try {
+      let controllerStopped = false;
+      if (active || hasOwnedSupervisor()) {
         const stopped = await operations.requestGracefulStop(BACKEND_ROOT, options);
         if (active && stopped?.absent) throw new Error('The active Astrid session has no responsive stop controller. Retry after restoring its controller.');
-      } catch (error) {
-        errors.push(error);
+        controllerStopped = !stopped?.absent;
       }
-      if (errors.length === 0 && active) {
-        try { await kernel.api.stop({ params: { uri } }); }
-        catch (error) { errors.push(error); }
+      // A dead/missing controller cannot vouch for durable Runtime work. Use
+      // the selected installed Runtime before allowing maintenance or lock admission.
+      if (!controllerStopped && filesystem.existsSync(PROGRAMS_DIR)) {
+        await operations.stopRuntime(BACKEND_ROOT, options);
       }
+      if (active) await kernel.api.stop({ params: { uri } });
+    } catch (error) {
+      errors.push(error);
     }
     if (errors.length === 0) {
       try { await operations.waitForInstallerLock(BACKEND_ROOT, options); }
@@ -376,8 +372,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     if (errors.length) {
       const prefix = 'Astrid is still running. Stop it in Pinokio, then try again.';
       const first = errors[0];
-      const runtimeRefusal = first.details !== undefined || /^Astrid is busy \(/.test(first.message)
-        || /^Runtime stop preflight/.test(first.message);
+      const runtimeRefusal = first.details !== undefined;
       const format = (error) => `${error.message}${error.details === undefined ? '' : `\n${JSON.stringify(error.details)}`}`;
       const message = runtimeRefusal ? format(first)
         : `${prefix}${errors.map(format).filter((value) => !value.includes(prefix)).join(' ') ? ` ${errors.map(format).filter((value) => !value.includes(prefix)).join(' ')}` : ''}`;
@@ -388,18 +383,6 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     }
     ondata?.({ raw: 'Astrid stopped.\r\n' });
     return { stopped: active, lockFree: true };
-  }
-  async function preflightStop(_req, ondata) {
-    const operations = lifecycle || await import('./lifecycle.mjs');
-    try {
-      const report = await operations.preflightStop(BACKEND_ROOT, {
-        filesystem, platform, environment, appDirectory: APP_DIR,
-      });
-      return { safe: true, report };
-    } catch (error) {
-      ondata?.({ raw: `${error.message}${error.details === undefined ? '' : `\r\n${JSON.stringify(error.details)}`}\r\n` });
-      throw error;
-    }
   }
   async function ensureDoorPortFree(_req, ondata) {
     const result = await probe();
@@ -415,7 +398,7 @@ function createApp({ platform = process.platform, appDirectory = path.resolve(__
     shellStep, gitShellStep, launcherPullMessage, customStep, ensureProgramDirectory, readInstallMode, saveModeStep, removeProgramFiles,
     validateExistingEditorCheckout, cloneEditorMessage, pullEditorMessage, sessionMessage, sessionStep,
     pendingUpdateTransaction, hasPendingUpdate, hasPendingLocalUpdate, recoverPendingUpdate,
-    stopHook, stopOwnedStart, preflightStop, hasOwnedSupervisor, localSessionReady, ensureLocalSessionForUpdate, runLocalUpdate, localUpdateControl, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
+    stopHook, stopOwnedStart, hasOwnedSupervisor, localSessionReady, ensureLocalSessionForUpdate, runLocalUpdate, localUpdateControl, ensureDoorPortFree, probeDoor: probe, modeOpenTarget, localSetOpenTarget,
     runScript: (root, args) => (isWindows ? windows : posix).run(root, args),
     ...CONSTANTS };
 }

@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import library from '../pinokio/lib.js';
 import { runSession } from '../pinokio/session.mjs';
-import { createController, requestGracefulStop } from '../pinokio/lifecycle.mjs';
+import { createController, requestGracefulStop, runCommand } from '../pinokio/lifecycle.mjs';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function makeShellApp(tempRoot, name) {
@@ -49,7 +49,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
           root: '/fixture/astrid', editor: '/fixture/editor', platform,
           installed: { node: '/pinned/node', npx: '/pinned/npx', python: '/pinned/python',
             profile: '/fixture/profile', data: '/fixture/data', env: {} },
-          signals, checkStop: async () => ({ safe: true }), pause: async () => {},
+          signals, pause: async () => {},
           openController: async (_root, callback) => {
             stop = callback;
             return { close: async () => { controllerCloses++; } };
@@ -110,7 +110,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
         assert.equal((await stop()).ok, true, 'cleanup remains idempotent even when the build failed');
         assert.equal(active.size, 0, 'cancellation must drain every owned child');
         assert.equal(controllerCloses, 1);
-        assert.equal(downs, outcome.startsWith('ci ') || outcome === 'Runtime exit' ? 0 : 1);
+        assert.equal(downs, outcome.startsWith('ci ') ? 0 : 1);
         assert.equal(modeWrites, outcome === 'success' ? 1 : 0);
         for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) assert.equal(signals.listenerCount(signal), 0);
       });
@@ -171,7 +171,6 @@ test('real POSIX fake Runtime/build processes leave no live descendants after su
       const pidFile = path.join(temp, 'runtime.pid'); const grandchildFile = path.join(temp, 'grandchild.pid');
       const installed = { node: process.execPath, npm, npx, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env: { ...process.env, PID_FILE: pidFile, GRANDCHILD_FILE: grandchildFile } };
       const pending = runSession({ action: 'build', root, editor, mode: 'local', installed, signals, pause, startupDeadlineMs: Infinity,
-        checkStop: async () => ({ safe: true }),
         spawnProcess: (...args) => { const child = spawn(...args); children.add(child); child.once('close', () => children.delete(child)); return child; },
       });
       if (outcome === 'interrupt') {
@@ -228,7 +227,6 @@ test('real controlled Stop runs fenced down before editor cleanup and releases t
     writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const live=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){fs.appendFileSync(process.env.EVENTS,'down\\n');process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy:live},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
     fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';fs.writeFileSync(process.env.EDITOR_PID,String(process.pid));process.on('SIGTERM',()=>{fs.appendFileSync(process.env.EVENTS,'editor-stop\\n');process.exit(0)});setInterval(()=>{},1000);`);
     await runSession({ action: 'serve', root, editor, mode: 'local', signals, pause, startupDeadlineMs: Infinity,
-      checkStop: async () => ({ safe: true }),
       installed: { node: process.execPath, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env },
       spawnProcess: (...args) => { const child = spawn(...args); children.add(child); child.once('close', () => children.delete(child)); return child; },
       portOpen: async () => false,
@@ -262,20 +260,14 @@ test('real POSIX busy refusal keeps Runtime, editor descendants, controller and 
     writeExecutable(path.join(root, 'run'), `#!${realPython}\nimport os,sys,fcntl,signal,time\nfrom pathlib import Path\nlock=open(os.environ['TEST_LOCK'],'w+b')\nfcntl.flock(lock,fcntl.LOCK_EX)\nPath(os.environ['RUNTIME_PID']).write_text(str(os.getpid()))\ndef stop(*args):\n Path(os.environ['RUNTIME_PID']).unlink()\n sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\nwhile True: time.sleep(1)\n`);
     const probeLock = () => spawnSync(realPython, ['-I', '-c', 'import fcntl,sys\nf=open(sys.argv[1],"r+b")\nfcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)', env.TEST_LOCK]);
     const python = path.join(temp, 'python-cli');
-    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv;if(a.includes('down')){if(fs.existsSync(process.env.BUSY_FILE)){console.error('Runtime is busy');process.exit(2)}const p=Number(fs.readFileSync(process.env.RUNTIME_PID));process.kill(p,'SIGTERM');}else{const live=fs.existsSync(process.env.RUNTIME_PID);console.log(JSON.stringify({support:{healthy:live},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
+    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv;if(a.includes('down')){if(fs.existsSync(process.env.BUSY_FILE)){console.log(JSON.stringify({ok:false,error:{message:'Astrid is busy (1 tasks running). Try again when they finish.',details:{task_count:1,blockers:[{task_id:'task-posix',state:'running'}]}}}));process.exit(2)}const p=Number(fs.readFileSync(process.env.RUNTIME_PID));process.kill(p,'SIGTERM');}else{const live=fs.existsSync(process.env.RUNTIME_PID);console.log(JSON.stringify({support:{healthy:live},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
     fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';import {spawn} from 'node:child_process';fs.writeFileSync(process.env.EDITOR_PID,String(process.pid));const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.env.GRANDCHILD_PID,String(c.pid));setInterval(()=>{},1000);\n`);
     const installed = { node: process.execPath, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env };
     let firstResponse; let retryResponse;
     const session = runSession({ action: 'serve', root, editor, mode: 'local', installed, signals, pause, startupDeadlineMs: Infinity,
-      checkStop: async () => ({ safe: true, blockers: [] }),
-      gracefulDown: async () => {
+      gracefulDown: async (spec, options) => {
         downAttempts++;
-        if (busy) {
-          const error = new Error('Astrid is busy (1 tasks running). Try again when they finish.');
-          error.details = { task_count: 1, blockers: [{ task_id: 'task-posix', state: 'running' }] };
-          throw error;
-        }
-        process.kill(Number(fs.readFileSync(env.RUNTIME_PID, 'utf8')), 'SIGTERM');
+        return runCommand(spec, options);
       },
       openController: async (controllerRoot, stop) => {
         controller = await createController(controllerRoot, stop); return controller;
