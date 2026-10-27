@@ -10,11 +10,11 @@ Pinokio seeds its generated `ENVIRONMENT` from `_ENVIRONMENT`. The launcher read
 | --- | --- | --- | --- | --- |
 | Empty ref | `https://astrid.haus/install` | `https://astrid.haus/install.ps1` | Bootstrap's production default | `banodoco/astrid-app`, branch `main` |
 | Explicit ref `main` | `https://raw.githubusercontent.com/banodoco/astrid-app/main/public/install` | Same directory, `install.ps1` | Same directory, `install-manifest.json`, downloaded and passed with `--manifest` | Same repository, branch `main` |
-| Fully local install/add/update | `sh E/public/install` | `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File E/public/install.ps1` | Always `--manifest M` | Existing validated checkout |
+| Fully local install/add | `sh E/public/install` | `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File E/public/install.ps1` | Always `--manifest M` | Existing validated checkout |
 
 Remote bootstrap commands download the script into a temporary directory before executing it. Ref commands download the manifest there too. POSIX uses `curl -fsSL URL -o FILE` and `sh FILE`; Windows uses TLS 1.2, `Invoke-WebRequest -UseBasicParsing URL -OutFile FILE`, and `& ([scriptblock]::Create((Get-Content -Raw -LiteralPath FILE)))`. The surrounding POSIX EXIT trap / PowerShell finally removes the temporary directory.
 
-Every installer invocation passes `--root R --managed-by pinokio`. Hosted Update uses `--update-app`: one installer process stages the candidate while Astrid runs and owns the short stop/switch/start sequence. The existing workspace is retained; a changed storage schema refuses before stopping and directs the user to the full migration updater. A supervisor started by the updater retains the ordinary authenticated control endpoint, so the menu can open, update, and stop it. Update adds `--update`. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
+Install and Switch to fully local pass `--root R --managed-by pinokio` to the installer. Hosted Update still uses the ordinary `install` dispatch and shared C2 transaction with the remote manifest. Fully local Update pulls the Pinokio launcher, starts or reuses its existing local session, then runs the editor checkout's `npm run update`. The App updater selects the served App commit and uses the shared C2 transaction with that commit's manifest; it does not pull the editor checkout or run another installer bootstrap. Pinokio's existing session controller stays alive and handles the Runtime start/verify callback. The explicit CLI `--update` remains the hidden forced-restage action. Uninstall adds `--uninstall`; only the typed-delete action additionally passes `--delete-data`.
 
 The current POSIX bootstrap honors a supplied manifest before preparing tool/source pins, so it can run from raw GitHub without an astrid.haus manifest request. It uses absolute public uv/GitHub download URLs, not a URL relative to its own script. The source smoke runs its actual bytes with fake curl, uv and package operations. Windows has the equivalent manifest-selection logic; its native execution remains unqualified here.
 
@@ -29,21 +29,21 @@ The shell is Bash on macOS/Linux and PowerShell on Windows. `B(action)` below me
 | `install.js` | Port preflight; create `A/app`; `B(install)`; save `backend` | — |
 | `install-local.js` | — | If re-invoked on an existing install/session, safe Stop first; port preflight; create `A/app`; clone or validate/pull editor; `L(install)`; temporary build session; save `local` |
 | `add-local.js` | Await Stop and lock release; port preflight; clone or validate/pull editor; `L(update)`; temporary build session; save `local` | Refuses |
-| `update.js` | Read-only Runtime stop preflight; pull launcher; `B(update-app)` retains its existing preparation, fenced stop/switch/start, and recovery behavior | Await Stop and lock release; port preflight; validate/pull editor; `L(update)`; temporary build session |
+| `update.js` | Read-only Runtime stop preflight; pull launcher; `B(install)` shared transaction, which stages before its final fenced stop and starts/verifies the foreground session | Read-only Runtime stop preflight; pull launcher; start/reuse the existing local session; run the editor checkout's `npm run update` through its live App launcher |
 | `start.js` | Port preflight; foreground hosted session; publish hosted URL after readiness | Port preflight; foreground local session; publish local URL after readiness |
 | `stop.js` | Preflight, await Runtime's final fenced stop, then stop the Start shell and verify the per-user installer lock | Same adapter ordering; native refusal veto remains an upstream dependency |
 | `reset.js` | Await Stop and lock release; recursively remove only `A/app` | Same; no bootstrap/uninstaller |
 | `uninstall.js` | Await Stop and lock release; port preflight; `B(uninstall)`; remove `A/app` | Same |
 | `uninstall-delete-data.js` | Require exact `DELETE`; await Stop; port preflight; `B(uninstall --delete-data)`; remove `A/app` | Same |
 
-The editor commands on POSIX are:
+The editor clone/pull commands used by Install and Switch to fully local on POSIX are:
 
 ```sh
 git clone --branch '<ref-or-main>' --single-branch -- 'https://github.com/banodoco/astrid-app' 'E'
 git -C 'E' pull --ff-only
 ```
 
-Windows uses the same Git arguments with PowerShell single-quote escaping, and checks `$LASTEXITCODE`. Before pulling, both platforms require the checkout's current branch to equal `ASTRID_APP_REF` or `main` when empty. An existing editor must have a `.git` entry and the expected HTTPS origin. A missing or different checkout fails rather than being silently replaced. Use a branch ref for the local update flow; detached tag/SHA updates are not supported.
+Windows uses the same Git arguments with PowerShell single-quote escaping, and checks `$LASTEXITCODE`. Before those install-time pulls, both platforms require the checkout's current branch to equal `ASTRID_APP_REF` or `main` when empty. An existing editor must have a `.git` entry and the expected HTTPS origin. A missing or different checkout fails rather than being silently replaced. Fully local Update keeps the `Update` action in Pinokio and lets the App updater perform its own edit-preserving target checkout; detached tag/SHA updates remain unsupported by install-time ref handling.
 
 Every shell step invokes `node A/pinokio/shell.mjs`, which builds the Astrid environment before spawning Bash or PowerShell with inherited stdio for live logs. Pinokio's `shell.run` env can only add variables, so it cannot perform this isolation itself. Shells run in the user's home so nested installer shells cannot recreate a Pinokio-owned `PWD`; commands use absolute paths, including `git -C A pull --ff-only` for launcher updates. POSIX runs `bash --noprofile --norc -c` with `set -eu` and unsets Bash's automatically exported `PWD`; PowerShell uses `-NoProfile`, `try/catch` and explicit native exit-code checks. The wrapper returns the child's exit code. The outer shell converts failure into `ASTRID_PINOKIO_FAILURE`, with a Pinokio `break: true` event, so a failing step cannot save a mode or continue. The marker is split in submitted shell source so terminal echo cannot trigger it. See the full wrapper bytes in the fixture.
 
@@ -114,12 +114,14 @@ After these checks the supervisor emits `ASTRID_PINOKIO_READY`. Pinokio's `done:
 | Installed backend, stopped | Start; Update; Switch to fully local; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Installed local, stopped | Start; Update; Reset; Uninstall; Uninstall and delete all Astrid data… |
 | Start running, no published URL | Starting Astrid…; Stop |
-| Ready owned Start | Open Astrid; Update and restart (hosted mode); Stop |
+| Ready owned Start | Open Astrid; Update and restart (hosted) or Update (local); Stop |
+| Detached owned local session, ready | Open Astrid; Update; Stop |
+| Detached owned local session, not ready | Starting Astrid…; Stop |
 | Install/add/update/reset/uninstall/delete/stop active | Operation status only |
 | External Astrid on 17340 | Explanation; Open Astrid only (hosted URL) |
 | Other program on 17340 | Conflict message only |
 
-Start is the default stopped menu item. Hosted Open displays `https://astrid.haus/?connect=1` in Pinokio's popout panel; its relative href keeps Pinokio's default-selection scheme check on the app page, and `target_full` carries the hosted URL. The panel opens the browser only after a click. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. The owned running menu reads the published URL and does not synthesize Open while startup is pending; once ready, Open Astrid is the default menu item.
+Start is the default stopped menu item. Hosted Open displays `https://astrid.haus/?connect=1` in Pinokio's popout panel; its relative href keeps Pinokio's default-selection scheme check on the app page, and `target_full` carries the hosted URL. The panel opens the browser only after a click. Local Open is `http://127.0.0.1:5180/tools/video-editor?connect=1`, `popout: false`. A detached local session is shown as ready only after Runtime status, preview HTTP, and workspace instance/realm binding checks succeed; it does not probe the hosted door port. The owned running menu reads the published URL and does not synthesize Open while startup is pending; once ready, Open Astrid is the default menu item.
 
 ## Stop hook, graceful shutdown and installer lock
 
@@ -138,6 +140,8 @@ Inspected historical source: pinokiod `add4a674ad1ba95bb62ec427fce519fe5bf0e9bf`
 ```
 
 Full Bash/PowerShell resolution and wrapper bytes are the `stopHook` entries in `tests/commands.json`. The helper reads the private `R/pinokio-control.json`, containing a random bearer token, supervisor PID and an ephemeral loopback port. Only an authenticated POST to `/stop` is accepted. There is no global Runtime endpoint or ambient data-root lookup in that request. A dead supervisor's stale record is removed on the next Start; a live PID is never stolen. Normal shutdown removes the record.
+
+During a fully local App update the same controller also accepts `/local-update-begin`, `/local-update-runtime`, and `/local-update-end`. They require the same bearer token, loopback peer, and exact `Host`; the controller refuses Stop while update maintenance is active. Begin keeps the current session owner alive while the App launcher stops Vite. Runtime start reloads `R/current`'s installed record and rebuilds this session's Runtime, status and down commands, validates the selected version and operation ID, and returns only after Runtime reports the expected transaction binding. The same owner then monitors and stops the selected Runtime. End resumes ordinary Runtime-exit monitoring only after Runtime is healthy. The App updater sends these callbacks over the installed `pinokio-control.json`; it does not create a second supervisor or issue Runtime `down` itself.
 
 ### Exact stop sequence
 
@@ -162,11 +166,11 @@ An owned Runtime child that has positively exited can leave editor/controller re
 
 The control request has a 45-second deadline. The preflight and final `down` have a 25-second process deadline. A failed preflight or `down` leaves the editor, Runtime, controller, and remaining session processes available for retry; Astrid does not invoke Pinokio's forced cleanup itself.
 
-The Stop menu, local Update, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) call the same `stopOwnedStart` function:
+The Stop menu, Reset, Uninstall, typed data deletion and Switch to fully local (`add-local.js`) call the same `stopOwnedStart` function:
 
 1. Run the read-only preflight, then request the controller's final Runtime `down` and retain its result.
 2. Call `kernel.api.stop` only after successful Runtime shutdown. Busy, unknown, and timeout errors return before native tree cleanup or lock checks.
-3. Wait for the actual installer lock after successful stop, even when Start was already idle. Maintenance steps do not pull, bootstrap, build, remove files, or save a mode after a refusal. Hosted Update performs its read-only preflight before pulling the launcher, then retains the existing app updater preparation/relaunch path and its final Runtime fence.
+3. Wait for the actual installer lock after successful stop, even when Start was already idle. These maintenance steps do not pull, bootstrap, build, remove files, or save a mode after refusal. Update runs a read-only preflight before launcher/editor preparation; its shared installer transaction performs candidate staging before the final Runtime fence.
 
 If the controller is unresponsive, its request fails closed. Astrid leaves the session intact and permits another Stop request. Lock verification has a 10-second poll budget and 12-second subprocess deadline after a successful shutdown. These are production operation bounds; no test has a harness timeout.
 

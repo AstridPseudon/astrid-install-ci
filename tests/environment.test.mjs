@@ -168,7 +168,17 @@ for (const platform of ['darwin', 'linux', 'win32']) for (const mode of ['backen
     const f = fixture(platform, mode);
     let lockChecks = 0;
     const app = library.createApp({ ...f, probe: async () => ({ kind: 'free' }),
-      execute: (_command, _args, options) => { checkPinokioEnvironment(options.env, f); return { status: 0, stdout: library.EDITOR_REPOSITORY }; }, lifecycle: {
+      startSessionForUpdate: async () => {}, sessionReadyCheck: async () => true,
+      execute: (command, args, options) => {
+        if (command === f.installed.node) {
+          checkEnvironment(options.env, f, true);
+          assert.deepEqual(args, [f.installed.npm, 'run', 'update']);
+          assert.equal(options.cwd, f.editor);
+          return { status: 0, stdout: 'local update fixture' };
+        }
+        checkPinokioEnvironment(options.env, f);
+        return { status: 0, stdout: library.EDITOR_REPOSITORY };
+      }, lifecycle: {
       preflightStop: async () => ({ safe: true, blockers: [] }),
       requestGracefulStop: async () => {},
       waitForInstallerLock: async (root, options) => {
