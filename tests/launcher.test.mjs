@@ -260,7 +260,8 @@ test('detached local readiness reuses the session status and preview/config bind
   const installed = { env: {} };
   const requests = [];
   let configMatches = true;
-  const result = () => JSON.stringify({ support: { healthy: true }, health: { status: 'ok' }, discovery });
+  const result = () => JSON.stringify({ support: { healthy: true },
+    health: { status: 'ok', runtime_instance_id: 'instance-1' }, discovery });
   const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed,
     run: async (spec) => { assert.ok(spec.args.includes('status')); return result(); },
     request: async (url) => {
@@ -279,8 +280,31 @@ test('detached local readiness reuses the session status and preview/config bind
   }), false);
   const bound = { env: { ASTRID_INSTALLER_OPERATION_ID: 'a'.repeat(32) } };
   assert.equal(await localSessionReady({ root: '/astrid', editor: '/editor', installed: bound,
-    run: async () => result(), request: async () => assert.fail('must reject a mismatched transaction binding before HTTP'),
-  }), false);
+    run: async () => result(), request: async (url) => url.endsWith('/tools/video-editor') ? { ok: true }
+      : { ok: true, json: async () => ({ schemaVersion: 1, runtimeInstanceId: 'instance-1', realmId: 'realm-1' }) },
+  }), true);
+});
+
+test('detached local readiness still requires Runtime instance and realm identity', async () => {
+  for (const discovery of [{ active_realm: 'realm' }, { runtime_instance_id: 'instance' }]) {
+    const status = JSON.stringify({ support: { healthy: true },
+      health: { status: 'ok', runtime_instance_id: discovery.runtime_instance_id }, discovery });
+    const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed: { env: {} },
+      run: async () => status,
+      request: async () => assert.fail('missing Runtime identity must fail before preview checks'),
+    });
+    assert.equal(ready, false);
+  }
+  for (const healthId of [undefined, 'other-instance']) {
+    const status = JSON.stringify({ support: { healthy: true },
+      health: { status: 'ok', ...(healthId ? { runtime_instance_id: healthId } : {}) },
+      discovery: { runtime_instance_id: 'instance', active_realm: 'realm' } });
+    const ready = await localSessionReady({ root: '/astrid', editor: '/editor', installed: { env: {} },
+      run: async () => status,
+      request: async () => assert.fail('health/discovery instance mismatch must fail before preview checks'),
+    });
+    assert.equal(ready, false);
+  }
 });
 
 test('Update preserves hosted bootstrap and routes fully local Update through the App updater', async () => {
@@ -465,12 +489,11 @@ test('pending local Update authenticates the retained controller before bypassin
   const controller = await createController(root, async () => ({ ok: true }), { localUpdate: {
     isUpdating: () => updating,
     begin: async () => { controlCalls += 1; updating = true; return { updating: true }; },
-    runtime: async ({ version: selected, operationId } = {}) => {
+    runtime: async ({ version: selected } = {}) => {
       assert.equal(updating, true);
       assert.equal(selected, version);
-      assert.equal(operationId, 'd'.repeat(32));
       runtimeVerified = true;
-      return { version: selected, operationId, ready: true };
+      return { version: selected, ready: true };
     },
     end: async () => {
       assert.equal(updating, true);
@@ -490,8 +513,8 @@ test('pending local Update authenticates the retained controller before bypassin
     execute: (command, args, options) => {
       invoked = { command, args, options };
       recoveryPromise = (async () => {
-        assert.deepEqual(plain(await requestLocalUpdate(root, 'runtime', { version, operationId: 'd'.repeat(32) })),
-          { ok: true, version, operationId: 'd'.repeat(32), ready: true });
+        assert.deepEqual(plain(await requestLocalUpdate(root, 'runtime', { version })),
+          { ok: true, version, ready: true });
         fs.writeFileSync(path.join(root, 'update-transaction.json'), JSON.stringify({
           step: 'rolled_back', transaction_context: { owner: 'local-update' },
         }));
@@ -832,20 +855,20 @@ test('installer record selects authoritative Python, data root, Node and npm; no
 });
 
 function sessionHarness({ platform = 'darwin', buildCode = 0, dependencyCode = 0, occupied = false, earlyExit = false,
-  operationId, discoveredOperationId = operationId, externalHealthy = false } = {}) {
+  externalHealthy = false } = {}) {
   const signals = new EventEmitter();
   const log = [];
   let pid = 5000;
   let statusCount = 0;
   const active = new Map();
-  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', npx: '/pinned/npx-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: operationId ? { ASTRID_INSTALLER_OPERATION_ID: operationId } : {} };
+  const installed = { node: '/pinned/node', npm: '/pinned/npm-cli.js', npx: '/pinned/npx-cli.js', python: '/pinned/python', profile: '/pinned/profile.json', data: '/data', env: {} };
   function close(child, code = 0) { active.delete(child.pid); child.emit('close', code, null); }
   function spawnProcess(command, args, options) {
     const child = new EventEmitter(); child.pid = ++pid; child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
     log.push({ command, args, options, pid }); active.set(pid, child);
     queueMicrotask(() => {
       if (command.endsWith('taskkill.exe')) { const target = active.get(Number(args[1])); if (target) close(target); close(child); }
-      else if (args.includes('status')) { const healthy = externalHealthy ? statusCount++ === 0 : statusCount++ > 0; child.stdout.emit('data', JSON.stringify({ support: { healthy }, health: { status: 'ok' }, discovery: { runtime_instance_id: 'instance', active_realm: 'realm', ...(discoveredOperationId ? { installer_operation_id: discoveredOperationId } : {}) } })); close(child, healthy ? 0 : 1); }
+      else if (args.includes('status')) { const healthy = externalHealthy ? statusCount++ === 0 : statusCount++ > 0; child.stdout.emit('data', JSON.stringify({ support: { healthy }, health: { status: 'ok', runtime_instance_id: 'instance' }, discovery: { runtime_instance_id: 'instance', active_realm: 'realm' } })); close(child, healthy ? 0 : 1); }
       else if (args.includes('ci')) close(child, dependencyCode);
       else if (args.includes('--build')) close(child, buildCode);
       else if (earlyExit && (command.endsWith('/run') || command.endsWith('cmd.exe'))) close(child, 7);
@@ -957,8 +980,7 @@ test('local update preparation builds before preview and announces READY under o
 });
 
 test('Pinokio local update callbacks retain the session owner while restarting and verifying the selected Runtime', async () => {
-  const operationId = 'b'.repeat(32);
-  const h = sessionHarness({ platform: 'linux', discoveredOperationId: operationId });
+  const h = sessionHarness({ platform: 'linux' });
   let localUpdate;
   let handoff;
   let ready = false;
@@ -974,11 +996,11 @@ test('Pinokio local update callbacks retain the session owner while restarting a
       handoff = (async () => {
         assert.deepEqual(await localUpdate.begin(), { updating: true });
         await h.options.gracefulDown({ command: '/pinned/python', args: ['down'] });
-        assert.deepEqual(await localUpdate.runtime({ version: 'candidate-v2', operationId }),
-          { version: 'candidate-v2', operationId, ready: true });
+        assert.deepEqual(await localUpdate.runtime({ version: 'candidate-v2' }),
+          { version: 'candidate-v2', ready: true });
         assert.deepEqual(await localUpdate.end(), { updating: false, ready: true });
         const candidate = h.log.findLast((item) => item.command?.endsWith('/run'));
-        assert.equal(candidate.options.env.ASTRID_INSTALLER_OPERATION_ID, operationId);
+        assert.equal(candidate.options.env.ASTRID_INSTALLER_OPERATION_ID, undefined);
         h.signals.emit('SIGTERM');
       })();
     },
@@ -991,16 +1013,15 @@ test('Pinokio local update callbacks retain the session owner while restarting a
 });
 
 test('fresh-controller recovery lets the existing App launcher start Runtime before Pinokio normal readiness', async () => {
-  const operationId = 'c'.repeat(32);
-  const h = sessionHarness({ platform: 'linux', discoveredOperationId: operationId });
+  const h = sessionHarness({ platform: 'linux' });
   let localUpdate;
   let work;
   const baseSpawn = h.options.spawnProcess;
   h.options.spawnProcess = (command, args, options) => {
     const child = baseSpawn(command, args, options);
     if (args.includes('--preview')) work = (async () => {
-      assert.deepEqual(await localUpdate.runtime({ version: 'recovered-v2', operationId }),
-        { version: 'recovered-v2', operationId, ready: true });
+      assert.deepEqual(await localUpdate.runtime({ version: 'recovered-v2' }),
+        { version: 'recovered-v2', ready: true });
       assert.deepEqual(await localUpdate.end(), { updating: false, ready: true });
     })();
     return child;
@@ -1105,18 +1126,17 @@ test('local update build failures never publish READY and drain the provisional 
 });
 
 test('transaction-bound serve requires the exact discovery operation id before readiness', async () => {
-  const operationId = 'a'.repeat(32);
-  const matched = sessionHarness({ platform: 'linux', operationId });
+  const matched = sessionHarness({ platform: 'linux' });
   let ready = false;
   await runSession({ ...matched.options, action: 'serve', mode: 'backend',
     request: async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', protocol: 'workspace.v1' }) }),
     output: (line) => { ready = line === 'ASTRID_PINOKIO_READY'; queueMicrotask(() => matched.signals.emit('SIGTERM')); },
   });
   const runtime = matched.log.find((item) => item.command?.endsWith('/run'));
-  assert.equal(runtime.options.env.ASTRID_INSTALLER_OPERATION_ID, operationId);
+  assert.equal(runtime.options.env.ASTRID_INSTALLER_OPERATION_ID, undefined);
   assert.equal(ready, true);
 
-  const mismatch = sessionHarness({ platform: 'linux', operationId, discoveredOperationId: 'b'.repeat(32) });
+  const mismatch = sessionHarness({ platform: 'linux' });
   await assert.rejects(runSession({ ...mismatch.options, action: 'serve', mode: 'backend', startupDeadlineMs: 0,
     output: (line) => assert.notEqual(line, 'ASTRID_PINOKIO_READY'),
   }), /didn't start in time/);

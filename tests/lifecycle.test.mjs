@@ -68,10 +68,10 @@ test('local update control shares the live controller token, checks Host, and bl
     assert.deepEqual(calls, ['begin', 'begin']);
     assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST',
       headers: { Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}` } })).status, 409);
-    assert.deepEqual(await requestLocalUpdate(root, 'runtime', { version: 'v2', operationId: 'a'.repeat(32) }),
+    assert.deepEqual(await requestLocalUpdate(root, 'runtime', { version: 'v2' }),
       { ok: true, ready: true });
     assert.deepEqual(await requestLocalUpdate(root, 'end'), { ok: true, ready: true });
-    assert.deepEqual(calls, ['begin', 'begin', ['runtime', { version: 'v2', operationId: 'a'.repeat(32) }], 'end']);
+    assert.deepEqual(calls, ['begin', 'begin', ['runtime', { version: 'v2' }], 'end']);
     const denied = await new Promise((resolve, reject) => {
       const request = http.request({ hostname: '127.0.0.1', port: record.port, path: '/local-update-begin', method: 'POST',
         headers: { Authorization: `Bearer ${record.token}`, Host: `localhost:${record.port}`, 'Content-Type': 'application/json', 'Content-Length': '2' } }, resolve);

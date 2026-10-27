@@ -84,10 +84,10 @@ export function commands(root, editor, mode, installed, platform = process.platf
 }
 const environmentCmd = (env) => env.ComSpec || env.COMSPEC || path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
 
-export function runtimeStatusHealthy(status, operationId) {
+export function runtimeStatusHealthy(status) {
   return status?.support?.healthy === true && !status.stale_discovery && status.health?.status === 'ok'
-    && (!operationId || (status.discovery?.installer_operation_id === operationId
-      && Boolean(status.discovery?.active_realm) && Boolean(status.discovery?.runtime_instance_id)));
+    && Boolean(status.discovery?.active_realm) && Boolean(status.discovery?.runtime_instance_id)
+    && status.health?.runtime_instance_id === status.discovery.runtime_instance_id;
 }
 
 export async function localPreviewReady(discovery, { request = fetch } = {}) {
@@ -105,12 +105,10 @@ export async function localPreviewReady(discovery, { request = fetch } = {}) {
 export async function localSessionReady({ root, editor, platform = process.platform,
   installed = installation(root, { platform }), request = fetch, run = runCommand } = {}) {
   try {
-    const operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
-    if (operationId !== undefined && (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId))) return false;
     const statusOutput = await run(commands(root, editor, 'local', installed, platform).status,
       { env: installed.env, cwd: root, timeoutMs: 5000 });
     const status = JSON.parse(statusOutput);
-    if (!runtimeStatusHealthy(status, operationId)) return false;
+    if (!runtimeStatusHealthy(status)) return false;
     return localPreviewReady(status.discovery, { request });
   } catch { return false; }
 }
@@ -162,17 +160,12 @@ export async function runSession({ action, root, editor, mode, platform = proces
   let installed = initialInstalled;
   let specs = commands(root, editor, mode, installed, platform);
   let env = { ...installed.env };
-  let operationId = installed.env.ASTRID_INSTALLER_OPERATION_ID ?? process.env.ASTRID_INSTALLER_OPERATION_ID;
-  if (operationId !== undefined) {
-    if (typeof operationId !== 'string' || !/^[0-9a-f]{32}$/.test(operationId)) throw new Error('Invalid installer transaction operation id.');
-    env.ASTRID_INSTALLER_OPERATION_ID = operationId;
-  }
+  delete env.ASTRID_INSTALLER_OPERATION_ID;
   if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
   else delete env.ASTRID_APP_LOOPBACK_ORIGIN;
   const children = [];
   let stopping = false;
   let updateInProgress = recoverLocalUpdate;
-  let updateOperationId;
   let downInProgress = false;
   let runtimeDown = false;
   let discovery;
@@ -223,14 +216,14 @@ export async function runSession({ action, root, editor, mode, platform = proces
     if (code !== 0) throw new Error(`Astrid command failed (exit ${code}): ${path.basename(spec.command)}`);
     return item;
   };
-  async function runtimeHealthy(expectedOperationId = operationId, childEnv = env) {
+  async function runtimeHealthy(childEnv = env) {
     const item = launch(specs.status, { capture: true, childEnv });
     const code = await Promise.race([item.done, failed]);
     await terminate(item);
     if (code !== 0) return false;
     try {
       const status = JSON.parse(item.stdout);
-      const healthy = runtimeStatusHealthy(status, expectedOperationId);
+      const healthy = runtimeStatusHealthy(status);
       if (healthy) discovery = status.discovery;
       return healthy;
     } catch { return false; }
@@ -347,10 +340,9 @@ export async function runSession({ action, root, editor, mode, platform = proces
         updateInProgress = true;
         return { updating: true };
       },
-      runtime: async ({ version, operationId: nextOperationId } = {}) => {
+      runtime: async ({ version } = {}) => {
         if (!updateInProgress) throw new Error('Begin the Pinokio update before starting its Runtime.');
-        if (typeof version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version)
-          || typeof nextOperationId !== 'string' || !/^[0-9a-f]{32}$/.test(nextOperationId)) {
+        if (typeof version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version)) {
           throw new Error('Invalid Pinokio Runtime update request.');
         }
         const selected = filesystem.readFileSync(paths.join(root, 'current'), 'utf8').trim();
@@ -364,14 +356,13 @@ export async function runSession({ action, root, editor, mode, platform = proces
         }
         installed = selectedInstalled;
         specs = commands(root, editor, mode, installed, platform);
-        updateOperationId = nextOperationId;
-        operationId = nextOperationId;
-        env = { ...installed.env, ASTRID_INSTALLER_OPERATION_ID: nextOperationId };
+        env = { ...installed.env };
+        delete env.ASTRID_INSTALLER_OPERATION_ID;
         if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
         discovery = undefined;
         runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
-        await waitUntil(() => runtimeHealthy(nextOperationId, env), 'Astrid Runtime');
-        return { version, operationId: nextOperationId, ready: true };
+        await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime');
+        return { version, ready: true };
       },
       end: async () => {
         if (!updateInProgress) return { updating: false };
@@ -401,23 +392,20 @@ export async function runSession({ action, root, editor, mode, platform = proces
           readTerminalJournal();
           installed = selectedInstalled;
           specs = commands(root, editor, mode, installed, platform);
-          operationId = undefined;
-          updateOperationId = undefined;
           env = { ...installed.env };
           delete env.ASTRID_INSTALLER_OPERATION_ID;
           if (mode === 'local') env.ASTRID_APP_LOOPBACK_ORIGIN = 'off';
           discovery = undefined;
-          if (await runtimeHealthy(undefined, env)) {
+          if (await runtimeHealthy(env)) {
             throw new Error('A Runtime is already healthy outside this Pinokio session. Stop that Runtime, then retry local recovery.');
           }
           runtimeItem = launch(specs.runtime, { persistent: true, childEnv: env });
-          await waitUntil(() => runtimeHealthy(undefined, env), 'Astrid Runtime after local update recovery');
+          await waitUntil(() => runtimeHealthy(env), 'Astrid Runtime after local update recovery');
         }
-        if (!(await runtimeHealthy(updateOperationId, { ...env, ...(updateOperationId ? { ASTRID_INSTALLER_OPERATION_ID: updateOperationId } : {}) }))) {
+        if (!(await runtimeHealthy(env))) {
           throw new Error('The Astrid Runtime is not ready; update monitoring remains active for recovery.');
         }
         updateInProgress = false;
-        updateOperationId = undefined;
         return { updating: false, ready: true };
       },
     };

@@ -67,7 +67,8 @@ for (const platform of ['darwin', 'linux', 'win32']) {
                 close(active.get(Number(args[1])), null, 'SIGKILL'); close(child);
               } else if (args.includes('status')) {
                 const healthy = statusCount++ > 0;
-                child.stdout.emit('data', JSON.stringify({ support: { healthy }, health: { status: 'ok' },
+                child.stdout.emit('data', JSON.stringify({ support: { healthy },
+                  health: { status: 'ok', runtime_instance_id: 'fixture' },
                   discovery: { runtime_instance_id: 'fixture', active_realm: 'fixture' } }));
                 close(child, healthy ? 0 : 1);
               } else if (args.includes('ci') || args.includes('--build')) {
@@ -163,7 +164,7 @@ test('real POSIX fake Runtime/build processes leave no live descendants after su
       fs.mkdirSync(root); fs.mkdirSync(path.join(editor, 'scripts'), { recursive: true });
       writeExecutable(path.join(root, 'run'), `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(process.env.PID_FILE,String(process.pid));process.on('SIGTERM',()=>{fs.rmSync(process.env.PID_FILE,{force:true});process.exit(0)});setInterval(()=>{},1000);\n`);
       const python = path.join(temp, 'fake-python');
-      writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const healthy=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){if(healthy)process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=healthy?0:1;}\n`);
+      writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const healthy=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){if(healthy)process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=healthy?0:1;}\n`);
       const npm = path.join(temp, 'npm-cli.cjs'); fs.writeFileSync(npm, 'process.exit(0)');
       const npx = path.join(temp, 'npx-cli.cjs'); fs.writeFileSync(npx, 'process.exit(0)');
       fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';import {spawn} from 'node:child_process';\nconst child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.env.GRANDCHILD_FILE,String(child.pid));\n${outcome === 'success' ? 'child.kill();process.exit(0);' : outcome === 'failure' ? 'process.exit(9);' : 'setInterval(()=>{},1000);'}\n`);
@@ -224,7 +225,7 @@ test('real controlled Stop runs fenced down before editor cleanup and releases t
     const env = { ...process.env, PID_FILE: path.join(temp, 'runtime.pid'), EDITOR_PID: path.join(temp, 'editor.pid'), EVENTS: path.join(temp, 'events'), TEST_LOCK: path.join(temp, 'installer.lock') };
     writeExecutable(path.join(root, 'run'), `#!${realPython}\nimport os,sys,fcntl,signal,time\nfrom pathlib import Path\nlock=open(os.environ['TEST_LOCK'],'w+b')\nfcntl.flock(lock,fcntl.LOCK_EX)\nPath(os.environ['PID_FILE']).write_text(str(os.getpid()))\ndef stop(*args):\n    with open(os.environ['EVENTS'],'a') as out: out.write('runtime-clean\\n')\n    Path(os.environ['PID_FILE']).unlink()\n    sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\nwhile True: time.sleep(1)\n`);
     const python = path.join(temp, 'python-cli');
-    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const live=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){fs.appendFileSync(process.env.EVENTS,'down\\n');process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy:live},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
+    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const live=fs.existsSync(process.env.PID_FILE);if(process.argv.includes('down')){fs.appendFileSync(process.env.EVENTS,'down\\n');process.kill(Number(fs.readFileSync(process.env.PID_FILE)),'SIGTERM');}else{console.log(JSON.stringify({support:{healthy:live},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
     fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';fs.writeFileSync(process.env.EDITOR_PID,String(process.pid));process.on('SIGTERM',()=>{fs.appendFileSync(process.env.EVENTS,'editor-stop\\n');process.exit(0)});setInterval(()=>{},1000);`);
     await runSession({ action: 'serve', root, editor, mode: 'local', signals, pause, startupDeadlineMs: Infinity,
       checkStop: async () => ({ safe: true }),
@@ -261,7 +262,7 @@ test('real POSIX busy refusal keeps Runtime, editor descendants, controller and 
     writeExecutable(path.join(root, 'run'), `#!${realPython}\nimport os,sys,fcntl,signal,time\nfrom pathlib import Path\nlock=open(os.environ['TEST_LOCK'],'w+b')\nfcntl.flock(lock,fcntl.LOCK_EX)\nPath(os.environ['RUNTIME_PID']).write_text(str(os.getpid()))\ndef stop(*args):\n Path(os.environ['RUNTIME_PID']).unlink()\n sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\nwhile True: time.sleep(1)\n`);
     const probeLock = () => spawnSync(realPython, ['-I', '-c', 'import fcntl,sys\nf=open(sys.argv[1],"r+b")\nfcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)', env.TEST_LOCK]);
     const python = path.join(temp, 'python-cli');
-    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv;if(a.includes('down')){if(fs.existsSync(process.env.BUSY_FILE)){console.error('Runtime is busy');process.exit(2)}const p=Number(fs.readFileSync(process.env.RUNTIME_PID));process.kill(p,'SIGTERM');}else{const live=fs.existsSync(process.env.RUNTIME_PID);console.log(JSON.stringify({support:{healthy:live},health:{status:'ok'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
+    writeExecutable(python, `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv;if(a.includes('down')){if(fs.existsSync(process.env.BUSY_FILE)){console.error('Runtime is busy');process.exit(2)}const p=Number(fs.readFileSync(process.env.RUNTIME_PID));process.kill(p,'SIGTERM');}else{const live=fs.existsSync(process.env.RUNTIME_PID);console.log(JSON.stringify({support:{healthy:live},health:{status:'ok',runtime_instance_id:'fixture'},discovery:{runtime_instance_id:'fixture',active_realm:'fixture'}}));process.exitCode=live?0:1;}\n`);
     fs.writeFileSync(path.join(editor, 'scripts', 'dev-local-workspace.mjs'), `import fs from 'node:fs';import {spawn} from 'node:child_process';fs.writeFileSync(process.env.EDITOR_PID,String(process.pid));const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(process.env.GRANDCHILD_PID,String(c.pid));setInterval(()=>{},1000);\n`);
     const installed = { node: process.execPath, python, profile: path.join(temp, 'profile.json'), data: path.join(temp, 'data'), env };
     let firstResponse; let retryResponse;
