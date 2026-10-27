@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { bounded, CONTROL_FILE, createController, preflightStop, requestGracefulStop, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
+import { bounded, CONTROL_FILE, createController, requestGracefulStop, requestLocalUpdate, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
 
 const helper = path.resolve(import.meta.dirname, '../pinokio/installer-lock.py');
 test('native hook control is authenticated, awaited and removes its record', async () => {
@@ -48,6 +49,39 @@ test('controller failures and deadlines are reported without unbounded test wait
   }
 });
 
+test('local update control shares the live controller token, checks Host, and blocks Stop while updating', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-local-update-control-'));
+  let controller;
+  const calls = [];
+  let updating = false;
+  try {
+    controller = await createController(root, async () => ({ ok: true }), { localUpdate: {
+      isUpdating: () => updating,
+      begin: async () => { calls.push('begin'); updating = true; return { updating: true }; },
+      runtime: async (payload) => { calls.push(['runtime', payload]); return { ready: true }; },
+      end: async () => { calls.push('end'); updating = false; return { ready: true }; },
+    } });
+    const record = JSON.parse(fs.readFileSync(path.join(root, CONTROL_FILE)));
+    assert.deepEqual(await requestLocalUpdate(root, 'begin'), { ok: true, updating: true });
+    // A rollback can re-enter begin before the first candidate Runtime exists.
+    assert.deepEqual(await requestLocalUpdate(root, 'begin'), { ok: true, updating: true });
+    assert.deepEqual(calls, ['begin', 'begin']);
+    assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST',
+      headers: { Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}` } })).status, 409);
+    assert.deepEqual(await requestLocalUpdate(root, 'runtime', { version: 'v2' }),
+      { ok: true, ready: true });
+    assert.deepEqual(await requestLocalUpdate(root, 'end'), { ok: true, ready: true });
+    assert.deepEqual(calls, ['begin', 'begin', ['runtime', { version: 'v2' }], 'end']);
+    const denied = await new Promise((resolve, reject) => {
+      const request = http.request({ hostname: '127.0.0.1', port: record.port, path: '/local-update-begin', method: 'POST',
+        headers: { Authorization: `Bearer ${record.token}`, Host: `localhost:${record.port}`, 'Content-Type': 'application/json', 'Content-Length': '2' } }, resolve);
+      request.on('error', reject); request.end('{}');
+    });
+    denied.resume(); assert.equal(denied.statusCode, 403);
+    await assert.rejects(requestLocalUpdate(root, 'invalid'), /Invalid Pinokio update action/);
+  } finally { await controller?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('final Runtime down preserves structured busy details through the controller', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-structured-stop-'));
   let controller;
@@ -69,32 +103,6 @@ test('runCommand keeps Runtime CLI JSON message and details on fenced-down refus
   await assert.rejects(runCommand({ command: '/pinned/python', args: ['-I', '-m', 'astrid_runtime', 'down'] }, {
     execute: (_command, _args, _options, done) => done(Object.assign(new Error('exit 2'), { code: 2 }), '', payload),
   }), (error) => {
-    assert.equal(error.message, 'Astrid is busy (1 tasks running). Try again when they finish.');
-    assert.deepEqual(error.details, details);
-    return true;
-  });
-});
-
-test('Runtime preflight invokes the installed read-only API and preserves structured refusal details', async () => {
-  const installed = { python: '/pinned/python', data: '/selected data', env: { PINNED: 'yes' } };
-  let invoked;
-  const report = { safe: true, blockers: [] };
-  assert.deepEqual(await preflightStop(installed, { run: async (spec, options) => {
-    invoked = { spec, options };
-    return JSON.stringify(report);
-  } }), report);
-  assert.equal(invoked.spec.command, installed.python);
-  assert.deepEqual(invoked.spec.args.slice(0, 2), ['-I', '-c']);
-  assert.match(invoked.spec.args[2], /preflight_stop\(RuntimePaths\.current\(data_root=Path\(sys\.argv\[1\]\)\)\)/);
-  assert.equal(invoked.spec.args[3], installed.data);
-  assert.equal(invoked.options.cwd, installed.data);
-  assert.equal(invoked.options.env, installed.env);
-  assert.equal(invoked.options.timeoutMs, 25_000);
-
-  const details = { safe: false, task_count: 1, blockers: [{ task_id: 'task-1', state: 'running' }] };
-  await assert.rejects(preflightStop(installed, { run: async () => {
-    throw new Error(`Command failed: ${JSON.stringify({ message: 'Astrid is busy (1 tasks running). Try again when they finish.', details })}`);
-  } }), (error) => {
     assert.equal(error.message, 'Astrid is busy (1 tasks running). Try again when they finish.');
     assert.deepEqual(error.details, details);
     return true;
@@ -140,4 +148,36 @@ test('actual lock helper rejects a held temp lock, accepts release and creates n
     assert.equal((await executePython(args, { ...process.env, TEST_LOCK: lock })).code, 0);
     assert.equal(fs.existsSync(lock), false);
   } finally { if (holder) { holder.kill('SIGKILL'); await once(holder, 'close'); } fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+test('controllerless stop uses the selected pinned Runtime down and preserves structured details', async () => {
+  const { stopRuntime } = await import('../pinokio/lifecycle.mjs');
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const p = platform === 'win32' ? path.win32 : path.posix;
+    const appDirectory = platform === 'win32' ? 'C:\\Pinokio\\api\\Astrid' : '/pinokio/api/Astrid';
+    const root = p.join(appDirectory, 'app', 'astrid');
+    const versionRoot = p.join(root, 'versions', 'v1');
+    const node = p.join(versionRoot, 'node', 'bin', 'node');
+    const python = p.join(versionRoot, 'py', 'python');
+    const profile = p.join(versionRoot, 'profile.json');
+    const data = platform === 'win32' ? 'D:\\Data' : '/data';
+    const record = { root: versionRoot, python, profile, env: { ASTRID_NODE_EXECUTABLE: node } };
+    const files = new Map([[p.join(root, 'current'), 'v1'],
+      [p.join(versionRoot, 'version.json'), JSON.stringify(record)],
+      [p.join(root, 'install.json'), JSON.stringify({ owner: 'haus.astrid.runtime', managed_by: 'pinokio', data_root: data })]]);
+    const filesystem = { existsSync: () => true, readFileSync: (file) => files.get(file) };
+    const details = { safe: false, blockers: [{ task_id: 'pinned-down' }] };
+    await assert.rejects(stopRuntime(root, { platform, filesystem, environment: {}, appDirectory,
+      run: async (spec, options) => {
+        assert.deepEqual(spec, { command: python, args: ['-I', '-m', 'astrid_runtime', 'down', '--profile', 'astrid', '--data-root', data, '--source-manifest', profile, '--json'] });
+        assert.equal(options.cwd, root);
+        assert.equal(options.timeoutMs, 25_000);
+        assert.equal(options.env.ASTRID_NODE_EXECUTABLE, node);
+        throw Object.assign(new Error('Selected Runtime refused.'), { details });
+      },
+    }), (error) => { assert.deepEqual(error.details, details); return true; });
+    files.set(p.join(root, 'install.json'), JSON.stringify({ owner: 'someone-else', managed_by: 'pinokio', data_root: data }));
+    await assert.rejects(stopRuntime(root, { platform, filesystem, run: () => assert.fail('wrong owner must not execute') }), /wasn't installed with Pinokio/);
+    await stopRuntime(root, { platform, filesystem: { existsSync: () => false }, run: () => assert.fail('no program files') });
+  }
 });

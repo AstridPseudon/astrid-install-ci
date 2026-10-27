@@ -1,4 +1,4 @@
-// Authenticated control of this launcher's supervisor; no ambient Runtime down.
+// Authenticated session stop; controllerless maintenance uses the installed Runtime down.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -43,54 +43,23 @@ export function runCommand(spec, { env, cwd, timeoutMs = DOWN_MS, execute = exec
       });
   });
 }
-export async function preflightStop(rootOrInstalled, { timeoutMs = DOWN_MS, run = runCommand,
-  filesystem = fs, platform = process.platform, environment = process.env, appDirectory } = {}) {
-  const installed = typeof rootOrInstalled === 'string'
-    ? (await import('./session.mjs')).installation(rootOrInstalled, { filesystem, platform, environment, appDirectory })
-    : rootOrInstalled;
-  if (!installed?.python || !installed.data) throw new Error('Installed Runtime paths are unavailable for a safe stop check.');
-  const code = [
-    'import json,sys',
-    'from pathlib import Path',
-    'from astrid_runtime.paths import RuntimePaths',
-    'from astrid_runtime.bootstrap import BootstrapError,preflight_stop',
-    'try:',
-    ' report=preflight_stop(RuntimePaths.current(data_root=Path(sys.argv[1])))',
-    ' print(json.dumps(report))',
-    'except BootstrapError as error:',
-    ' print(json.dumps({"message":str(error),"details":error.details}))',
-    ' raise SystemExit(2)',
-    'except Exception as error:',
-    ' print(json.dumps({"message":str(error)}))',
-    ' raise SystemExit(2)',
-  ].join('\n');
-  let output;
-  try {
-    output = await run({ command: installed.python, args: ['-I', '-c', code, installed.data] },
-      { env: installed.env, cwd: installed.data, timeoutMs });
-  } catch (error) {
-    const raw = String(error.message || error).replace(/^Command failed:\s*/, '');
-    try {
-      const refusal = JSON.parse(raw);
-      const preserved = new Error(refusal.message || 'Runtime stop preflight refused.');
-      if (refusal.details !== undefined) preserved.details = refusal.details;
-      throw preserved;
-    } catch (parseError) {
-      if (parseError instanceof SyntaxError) throw error;
-      throw parseError;
-    }
+// Maintenance without a live session still needs C1's actual fenced down.
+// The installer lock alone cannot establish that durable work is idle.
+export async function stopRuntime(root, { filesystem = fs, platform = process.platform,
+  environment = process.env, appDirectory, installed, run = runCommand, timeoutMs = DOWN_MS } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  if (!filesystem.existsSync(p.dirname(root))) return;
+  const session = await import('./session.mjs');
+  if (!installed) {
+    installed = session.installationFiles(root, { filesystem, platform });
+    installed.env = policy.buildEnvironment({ appDirectory: appDirectory || p.resolve(root, '..', '..'),
+      platform, environment, recordEnv: installed.env });
   }
-  let report;
-  try { report = JSON.parse(output); }
-  catch { throw new Error('Runtime stop preflight returned an unreadable report.'); }
-  if (report?.safe !== true) {
-    const error = new Error(report?.message || report?.headline || 'Runtime stop preflight refused.');
-    error.details = report;
-    throw error;
-  }
-  return report;
+  await run(session.commands(root, '', 'backend', installed, platform).down,
+    { env: installed.env, cwd: root, timeoutMs });
 }
-export async function createController(root, stop, { filesystem = fs, pid = process.pid, killProcess = process.kill.bind(process) } = {}) {
+export async function createController(root, stop, { filesystem = fs, pid = process.pid,
+  killProcess = process.kill.bind(process), localUpdate = {} } = {}) {
   const file = path.join(root, CONTROL_FILE);
   try {
     const prior = JSON.parse(filesystem.readFileSync(file, 'utf8'));
@@ -101,17 +70,48 @@ export async function createController(root, stop, { filesystem = fs, pid = proc
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const token = randomBytes(32).toString('hex');
   const server = createServer(async (req, res) => {
-    req.resume();
-    if (req.method !== 'POST' || req.url !== '/stop' || req.headers.authorization !== `Bearer ${token}`) {
+    const send = (status, body = {}) => {
+      res.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify(body));
+    };
+    if (req.method !== 'POST' || req.headers.authorization !== `Bearer ${token}`
+      || req.socket.remoteAddress !== '127.0.0.1' || req.headers.host !== `127.0.0.1:${server.address()?.port}`) {
+      req.resume();
       res.writeHead(403); res.end(); return;
     }
+    const route = req.url;
+    if (route === '/stop') {
+      req.resume();
+      if (localUpdate.isUpdating?.()) return send(409, { ok: false, errors: ['Astrid is updating. Try again when it finishes.'] });
+      try {
+        const result = await stop();
+        send(result.ok ? 200 : 500, result);
+      } catch (error) {
+        send(500, { ok: false, errors: [error.message], ...(error.details !== undefined ? { details: error.details } : {}) });
+      }
+      return;
+    }
+    const action = ({ '/local-update-begin': 'begin', '/local-update-runtime': 'runtime', '/local-update-end': 'end' })[route];
+    if (!action || typeof localUpdate[action] !== 'function') {
+      req.resume(); send(404, { ok: false, errors: ['Unknown Pinokio controller request.'] }); return;
+    }
     try {
-      const result = await stop();
-      res.writeHead(result.ok ? 200 : 500, { 'Content-Type': 'application/json', Connection: 'close' });
-      res.end(JSON.stringify(result));
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 4096) { req.destroy(); throw new Error('Pinokio controller request is too large.'); }
+        chunks.push(chunk);
+      }
+      let payload = {};
+      if (size) {
+        payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid Pinokio controller request.');
+      }
+      const result = await localUpdate[action](payload);
+      send(200, { ok: true, ...(result && typeof result === 'object' ? result : {}) });
     } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json', Connection: 'close' });
-      res.end(JSON.stringify({ ok: false, errors: [error.message], ...(error.details !== undefined ? { details: error.details } : {}) }));
+      send(500, { ok: false, error: error.message, errors: [error.message], ...(error.details !== undefined ? { details: error.details } : {}) });
     }
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -136,10 +136,31 @@ export async function requestGracefulStop(root, { filesystem = fs, request = fet
   try { killProcess(record.pid, 0); }
   catch (error) { if (error.code === 'ESRCH') return { ok: true, absent: true }; throw error; }
   const response = await request(`http://127.0.0.1:${record.port}/stop`, { method: 'POST',
-    headers: { Authorization: `Bearer ${record.token}` }, signal: AbortSignal.timeout(timeoutMs) });
+    headers: { Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}` }, signal: AbortSignal.timeout(timeoutMs) });
   const result = await response.json();
   if (!response.ok || result.ok !== true) {
     const error = new Error((result.errors || ['Graceful stop failed.']).join(' '));
+    if (result.details !== undefined) error.details = result.details;
+    throw error;
+  }
+  return result;
+}
+
+export async function requestLocalUpdate(root, action, payload = {}, { filesystem = fs, request = fetch,
+  platform = process.platform, timeoutMs = 240_000 } = {}) {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  if (!['begin', 'runtime', 'end'].includes(action)) throw new Error('Invalid Pinokio update action.');
+  const record = JSON.parse(filesystem.readFileSync(p.join(root, CONTROL_FILE), 'utf8'));
+  if (record.schema !== 1 || !Number.isSafeInteger(record.port) || record.port < 1 || record.port > 65535
+    || !/^[a-f0-9]{64}$/.test(record.token)) throw new Error('Invalid Astrid controller record.');
+  const route = { begin: 'local-update-begin', runtime: 'local-update-runtime', end: 'local-update-end' }[action];
+  const response = await request(`http://127.0.0.1:${record.port}/${route}`, { method: 'POST',
+    headers: { Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs) });
+  let result;
+  try { result = await response.json(); } catch { result = {}; }
+  if (!response.ok || result.ok !== true) {
+    const error = new Error((result.errors || ['Pinokio update request failed.']).join(' '));
     if (result.details !== undefined) error.details = result.details;
     throw error;
   }
