@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { bounded, CONTROL_FILE, createController, preflightStop, requestGracefulStop, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
+import { bounded, CONTROL_FILE, createController, preflightStop, requestGracefulStop, requestLocalUpdate, runCommand, waitForInstallerLock } from '../pinokio/lifecycle.mjs';
 
 const helper = path.resolve(import.meta.dirname, '../pinokio/installer-lock.py');
 test('native hook control is authenticated, awaited and removes its record', async () => {
@@ -46,6 +47,39 @@ test('controller failures and deadlines are reported without unbounded test wait
     }), /down failed/);
     assert.equal(requested, true);
   }
+});
+
+test('local update control shares the live controller token, checks Host, and blocks Stop while updating', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'astrid-local-update-control-'));
+  let controller;
+  const calls = [];
+  let updating = false;
+  try {
+    controller = await createController(root, async () => ({ ok: true }), { localUpdate: {
+      isUpdating: () => updating,
+      begin: async () => { calls.push('begin'); updating = true; return { updating: true }; },
+      runtime: async (payload) => { calls.push(['runtime', payload]); return { ready: true }; },
+      end: async () => { calls.push('end'); updating = false; return { ready: true }; },
+    } });
+    const record = JSON.parse(fs.readFileSync(path.join(root, CONTROL_FILE)));
+    assert.deepEqual(await requestLocalUpdate(root, 'begin'), { ok: true, updating: true });
+    // A rollback can re-enter begin before the first candidate Runtime exists.
+    assert.deepEqual(await requestLocalUpdate(root, 'begin'), { ok: true, updating: true });
+    assert.deepEqual(calls, ['begin', 'begin']);
+    assert.equal((await fetch(`http://127.0.0.1:${record.port}/stop`, { method: 'POST',
+      headers: { Authorization: `Bearer ${record.token}`, Host: `127.0.0.1:${record.port}` } })).status, 409);
+    assert.deepEqual(await requestLocalUpdate(root, 'runtime', { version: 'v2', operationId: 'a'.repeat(32) }),
+      { ok: true, ready: true });
+    assert.deepEqual(await requestLocalUpdate(root, 'end'), { ok: true, ready: true });
+    assert.deepEqual(calls, ['begin', 'begin', ['runtime', { version: 'v2', operationId: 'a'.repeat(32) }], 'end']);
+    const denied = await new Promise((resolve, reject) => {
+      const request = http.request({ hostname: '127.0.0.1', port: record.port, path: '/local-update-begin', method: 'POST',
+        headers: { Authorization: `Bearer ${record.token}`, Host: `localhost:${record.port}`, 'Content-Type': 'application/json', 'Content-Length': '2' } }, resolve);
+      request.on('error', reject); request.end('{}');
+    });
+    denied.resume(); assert.equal(denied.statusCode, 403);
+    await assert.rejects(requestLocalUpdate(root, 'invalid'), /Invalid Pinokio update action/);
+  } finally { await controller?.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('final Runtime down preserves structured busy details through the controller', async () => {
