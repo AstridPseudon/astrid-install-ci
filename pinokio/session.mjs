@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import app from './lib.js';
 import policy from './environment.js';
-import { bounded, createController, DOWN_MS, runCommand } from './lifecycle.mjs';
+import { bounded, createController, DOWN_MS, preflightStop, runCommand } from './lifecycle.mjs';
 
 export function installationFiles(root, { platform = process.platform, filesystem = fs } = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix;
@@ -104,6 +104,7 @@ export function signalGroup(pid, signal, { killProcess = process.kill.bind(proce
 
 export async function runSession({ action, root, editor, mode, platform = process.platform,
   installed = installation(root), spawnProcess = spawn, request = fetch,
+  checkStop = preflightStop,
   portOpen = app.tcpPortOpen, pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   killProcess = process.kill.bind(process), signals = process, output = console.log,
   startupDeadlineMs = 180_000, openController = createController, gracefulDown = runCommand,
@@ -115,13 +116,21 @@ export async function runSession({ action, root, editor, mode, platform = proces
   else delete env.ASTRID_APP_LOOPBACK_ORIGIN;
   const children = [];
   let stopping = false;
+  let downInProgress = false;
+  let runtimeDown = false;
   let discovery;
   let runtimeItem;
   let editorItem;
   let controller;
+  let stopComplete = false;
+  let shutdownPromise;
+  let stopRequestPromise;
   let stopRequested = false;
-  let cleanupPromise;
+  let serveInterruptedByStop = false;
+  let finishStop;
+  const stopFinished = new Promise((resolve) => { finishStop = resolve; });
   let failure;
+  let runtimeExitFailure;
   let wakeFailure;
   const failed = new Promise((_, reject) => { wakeFailure = reject; });
   failed.catch(() => {});
@@ -138,7 +147,13 @@ export async function runSession({ action, root, editor, mode, platform = proces
       child.once('error', (error) => { item.closed = true; reject(error); if (persistent) fail(error); });
       child.once('close', (code, signal) => {
         item.closed = true;
-        if (persistent && !stopping) fail(new Error(`Astrid quit unexpectedly (${signal || code}).`));
+        item.exitCode = code;
+        item.exitSignal = signal;
+        if (persistent && !stopping && !(item === runtimeItem && downInProgress)) {
+          const error = new Error(`Astrid quit unexpectedly (${signal || code}).`);
+          if (item === runtimeItem) runtimeExitFailure = error;
+          fail(error);
+        }
         resolve(code);
       });
     });
@@ -195,52 +210,71 @@ export async function runSession({ action, root, editor, mode, platform = proces
     await item.done;
     item.released = true;
   }
-  function shutdown() {
-    return cleanupPromise ??= (async () => {
-      stopping = true;
+  async function shutdown() {
+    if (stopComplete) return { ok: true, errors: [] };
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
       const errors = [];
-      // The editor (and any in-flight build/status command) goes first.
-      for (const item of [...children].reverse().filter((owned) => owned !== runtimeItem && !owned.released)) {
+      // The Runtime's read-only report is an early refusal check. Runtime down
+      // repeats the check under its final fence and remains the stop authority.
+      if (runtimeItem && !runtimeDown) {
         try {
-          if (stopRequested && item === editorItem && platform !== 'win32' && !item.closed) {
-            // Keep a hung editor root alive so Pinokio can still enumerate and
-            // kill all descendants, including the app's detached Vite groups.
-            signalGroup(item.child.pid, 'SIGTERM', { killProcess });
-            await limit(item.done, 5000, 'Editor stop');
-            item.released = true;
-          } else await limit(terminate(item), 8000, 'Editor/command stop');
-        }
-        catch (error) { errors.push(error.message); }
-      }
-      if (runtimeItem && !runtimeItem.released) {
-        if (!runtimeItem.closed && discovery?.runtime_instance_id && errors.length === 0) {
-          try {
+          await checkStop(installed, { timeoutMs: DOWN_MS });
+          if (runtimeItem.closed) {
+            if (!Number.isInteger(runtimeItem.exitCode) && !runtimeItem.exitSignal) {
+              throw new Error('Astrid Runtime exit has not been confirmed.');
+            }
+            // Hosted app_update.py already completed the fenced Runtime down
+            // before it asks this supervisor to release editor/controller state.
+            // A positively exited owned child plus the read-only idle report
+            // permits only remnant cleanup; never signal it or issue another down.
+            // Unexpected failures still propagate through the session's catch.
+          } else {
+            downInProgress = true;
             await gracefulDown(specs.down, { env, cwd: root, timeoutMs: DOWN_MS });
             await limit(runtimeItem.done, 5000, 'Runtime exit after down');
-          } catch (error) { errors.push(error.message); }
-        } else if (!runtimeItem.closed && !discovery?.runtime_instance_id) {
-          // Startup never established custody. Signal only the owned foreground
-          // process; do not down a stale/external discovery at the same root.
-          try { await limit(terminate(runtimeItem), 8000, 'Starting Runtime stop'); }
-          catch (error) { errors.push(error.message); }
+          }
+          runtimeDown = true;
+        } catch (error) {
+          downInProgress = false;
+          if (runtimeItem.closed && !failure) fail(new Error('Astrid Runtime exited before its fenced stop completed.'));
+          return { ok: false, errors: [error.message], ...(error.details !== undefined ? { details: error.details } : {}) };
         }
-        // Controlled Stop leaves a failed/live Runtime for Pinokio's final tree
-        // kill. Direct signals and temporary builds have to drain it themselves.
-        if (!stopRequested || runtimeItem.closed) {
-          try { await limit(terminate(runtimeItem), 8000, 'Runtime cleanup'); }
-          catch (error) { errors.push(error.message); }
-        }
+      }
+
+      // No process, controller or lock cleanup begins until the final Runtime
+      // down has succeeded. A refusal leaves this function callable for retry.
+      stopping = true;
+      for (const item of [...children].reverse().filter((owned) => owned !== runtimeItem && !owned.released)) {
+        try { await limit(terminate(item), 8000, 'Editor/command stop'); }
+        catch (error) { errors.push(error.message); }
+      }
+      if (errors.length === 0) {
+        stopComplete = true;
+        finishStop();
       }
       return { ok: errors.length === 0, errors };
     })();
+    try { return await shutdownPromise; }
+    finally { if (!stopComplete) shutdownPromise = undefined; }
   }
   const requestStop = () => {
+    if (stopRequestPromise) return stopRequestPromise;
     stopRequested = true;
-    stopping = true;
-    fail(new Error('Astrid session stopped.'));
-    return shutdown();
+    stopRequestPromise = shutdown().then((result) => {
+      if (result.ok) fail(new Error('Astrid session stopped.'));
+      else { stopRequested = false; stopRequestPromise = undefined; }
+      return result;
+    });
+    return stopRequestPromise;
   };
-  const onSignal = () => { stopping = true; fail(new Error('Astrid session stopped.')); };
+  const onSignal = () => {
+    stopRequested = true;
+    shutdown().then((result) => {
+      if (result.ok) fail(new Error('Astrid session stopped.'));
+      else { stopRequested = false; output(result.errors.join(' ')); }
+    }).catch((error) => output(error.message));
+  };
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.on(signal, onSignal);
   try {
     // Never attach the editor to someone else's same-data-root Runtime.
@@ -275,12 +309,33 @@ export async function runSession({ action, root, editor, mode, platform = proces
       await failed;
     }
   } catch (error) {
-    if (!stopRequested) throw error;
+    const orderlyRuntimeExit = error === runtimeExitFailure && runtimeItem?.closed
+      && runtimeItem.exitCode === 0 && !runtimeItem.exitSignal;
+    // Cleanup completion does not prove that ci or the build completed. Only
+    // serve sessions may finish successfully after a controlled/orderly stop.
+    if (action === 'build' || (!stopComplete && !orderlyRuntimeExit)) {
+      serveInterruptedByStop = action === 'serve' && stopRequested;
+      throw error;
+    }
   } finally {
-    const result = await shutdown();
-    await controller?.close();
-    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.removeListener(signal, onSignal);
-    if (!result.ok && !stopRequested) throw new Error(result.errors.join(' '));
+    let result = await shutdown();
+    if (!result.ok && controller) {
+      // A build/startup failure can reach finally while work is still busy.
+      // Keep this session waiting for a successful controller/signal retry;
+      // returning here would orphan a live controller with no finalizer.
+      output(result.errors.join(' '));
+      await stopFinished;
+      result = { ok: true };
+    }
+    if (result.ok) {
+      await controller?.close();
+      for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) signals.removeListener(signal, onSignal);
+      // Serve may be stopped during startup; build cancellation must still
+      // reject after all owned children and the controller have drained.
+      if (serveInterruptedByStop && stopRequested && stopComplete) return;
+    } else if (runtimeItem?.closed && runtimeItem.exitCode === 0 && !runtimeItem.exitSignal) {
+      throw new Error(result.errors.join(' '));
+    } else if (!failure) throw new Error(result.errors.join(' '));
   }
 }
 
